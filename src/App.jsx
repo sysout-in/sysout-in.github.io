@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from './assets/vite.svg'
 import heroImg from './assets/hero.png'
@@ -6,6 +6,14 @@ import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
+  const [version, setVersion] = useState('dev')
+
+  useEffect(() => {
+    fetch('/version.json')
+      .then(res => res.json())
+      .then(data => setVersion(data.version))
+      .catch(() => setVersion('dev'))
+  }, [])
 
   return (
     <>
@@ -17,6 +25,7 @@ function App() {
         </div>
         <div>
           <h1>Sysout in</h1>
+          <p className="version-badge">Version: <strong>{version}</strong></p>
           <p>
             Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
           </p>
