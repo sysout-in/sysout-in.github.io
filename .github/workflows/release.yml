@@ -37,15 +37,24 @@ jobs:
       - name: Get current version and auto-increment
         id: version
         run: |
-          # Read current version from version.json and extract version number (remove 'v' prefix)
-          CURRENT_VERSION=$(cat public/version.json | grep -o '"version": "[^"]*"' | cut -d'"' -f4 | sed 's/^v//')
+          # Use Python for reliable JSON parsing
+          CURRENT_VERSION=$(python3 << 'PYTHON_EOF'
+          import json
+          with open('public/version.json') as f:
+              data = json.load(f)
+              version = data['version'].lstrip('v')
+          print(version, end='')
+          PYTHON_EOF
+          )
            
-          echo "Current version: $CURRENT_VERSION"
+          echo "Current version: [$CURRENT_VERSION]"
            
           # Parse version parts
-          MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
-          MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
-          PATCH=$(echo $CURRENT_VERSION | cut -d. -f3)
+          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+           
+          echo "Parts: MAJOR=$MAJOR, MINOR=$MINOR, PATCH=$PATCH"
            
           # Increment based on input
           INCREMENT_TYPE="${{ github.event.inputs.increment_type }}"
@@ -132,21 +141,18 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Validate version before release
+        id: validate
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          echo "DEBUG: Version to be released: '$VERSION'"
-          
-          if [ -z "$VERSION" ]; then
-            echo "ERROR: Version is empty!"
-            exit 1
-          fi
-          
-          # Validate version format (should be like X.Y.Z)
-          if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          echo "Raw version: [$VERSION]"
+           
+          # Check if it matches semantic versioning format
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "ERROR: Invalid version format: $VERSION"
             exit 1
           fi
-          
+           
+          echo "clean_version=$VERSION" >> $GITHUB_OUTPUT
           echo "✓ Version validated: v$VERSION"
 
       - name: Create GitHub Release
@@ -154,10 +160,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v${{ needs.prepare.outputs.version }}
-          release_name: Release v${{ needs.prepare.outputs.version }}
+          tag_name: v${{ steps.validate.outputs.clean_version }}
+          release_name: Release v${{ steps.validate.outputs.clean_version }}
           body: |
-            ## Release v${{ needs.prepare.outputs.version }}
+            ## Release v${{ steps.validate.outputs.clean_version }}
             
             This release has been automatically deployed to GitHub Pages.
             
