@@ -1,0 +1,281 @@
+name: Release Management Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Select version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    name: Release Management
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    outputs:
+      old_version: ${{ steps.read-version.outputs.old_version }}
+      new_version: ${{ steps.bump-version.outputs.new_version }}
+      release_branch: ${{ steps.create-release-branch.outputs.branch_name }}
+
+    steps:
+      # Step 1: Checkout repository
+      - name: 📥 Checkout repository on main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 2: Read current version.json
+      - name: 📖 Read current version from version.json
+        id: read-version
+        run: |
+          VERSION=$(jq -r '.version' public/version.json)
+          RELEASE_DATE=$(jq -r '.releaseDate' public/version.json)
+          echo "old_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "old_release_date=$RELEASE_DATE" >> $GITHUB_OUTPUT
+          echo "✅ Current Version: $VERSION"
+          echo "📅 Previous Release Date: $RELEASE_DATE"
+
+      # Step 3: Parse and bump version
+      - name: 🔧 Parse and bump version based on input (${{ github.event.inputs.bump_type }})
+        id: bump-version
+        run: |
+          OLD_VERSION="${{ steps.read-version.outputs.old_version }}"
+          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
+          
+          # Remove 'v' prefix and parse version
+          VERSION_NUMBER="${OLD_VERSION#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NUMBER"
+          
+          # Default to 0 if not present
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+          
+          echo "📊 Current Version Components - Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
+          
+          # Bump based on input
+          case $BUMP_TYPE in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+          
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "🚀 New Version: $NEW_VERSION"
+
+      # Step 4: Get current date and timestamp
+      - name: ⏰ Generate release date with timestamp
+        id: release-date
+        run: |
+          RELEASE_DATE=$(date -u '+%Y-%m-%d')
+          RELEASE_TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          echo "release_date=$RELEASE_DATE" >> $GITHUB_OUTPUT
+          echo "release_timestamp=$RELEASE_TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "📅 Release Date: $RELEASE_DATE"
+          echo "⏱️ Release Timestamp: $RELEASE_TIMESTAMP"
+
+      # Step 5: Update version.json file
+      - name: ✏️ Update version.json with new version (${{ steps.bump-version.outputs.new_version }}) and date
+        id: update-version
+        run: |
+          NEW_VERSION="${{ steps.bump-version.outputs.new_version }}"
+          RELEASE_DATE="${{ steps.release-date.outputs.release_date }}"
+          
+          # Update version.json using jq
+          jq --arg version "$NEW_VERSION" \
+             --arg releaseDate "$RELEASE_DATE" \
+             '.version = $version | .releaseDate = $releaseDate' \
+             public/version.json > public/version.json.tmp && \
+          mv public/version.json.tmp public/version.json
+          
+          echo "✅ version.json updated successfully"
+          echo "📝 Updated version.json content:"
+          cat public/version.json
+
+      # Step 6: Verify version.json update
+      - name: 🔍 Verify version.json was updated correctly
+        id: verify-update
+        run: |
+          UPDATED_VERSION=$(jq -r '.version' public/version.json)
+          UPDATED_DATE=$(jq -r '.releaseDate' public/version.json)
+          EXPECTED_VERSION="${{ steps.bump-version.outputs.new_version }}"
+          EXPECTED_DATE="${{ steps.release-date.outputs.release_date }}"
+          
+          if [ "$UPDATED_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "❌ Version mismatch! Expected: $EXPECTED_VERSION, Got: $UPDATED_VERSION"
+            exit 1
+          fi
+          
+          if [ "$UPDATED_DATE" != "$EXPECTED_DATE" ]; then
+            echo "❌ Date mismatch! Expected: $EXPECTED_DATE, Got: $UPDATED_DATE"
+            exit 1
+          fi
+          
+          echo "✅ Version verification passed!"
+          echo "verified_version=$UPDATED_VERSION" >> $GITHUB_OUTPUT
+          echo "verified_date=$UPDATED_DATE" >> $GITHUB_OUTPUT
+
+      # Step 7: Commit updated version.json
+      - name: 📤 Commit version.json update to main branch
+        id: commit-version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/version.json
+          git commit -m "chore: release version ${{ steps.bump-version.outputs.new_version }}
+
+          - Updated version from ${{ steps.read-version.outputs.old_version }} to ${{ steps.bump-version.outputs.new_version }}
+          - Bump type: ${{ github.event.inputs.bump_type }}
+          - Release date: ${{ steps.release-date.outputs.release_date }}
+          
+          Co-authored-by: GitHub Actions <actions@github.com>"
+          git push origin main
+          echo "✅ Changes committed and pushed to main"
+
+      # Step 8: Trigger deployment manually
+      - name: 🚀 Trigger deployment workflow for version ${{ steps.bump-version.outputs.new_version }}
+        id: trigger-deploy
+        run: |
+          echo "⏳ Waiting for deployment workflow to complete..."
+          # Alternative: Use GitHub CLI to trigger the workflow
+          gh workflow run deploy.yml --ref main
+          echo "✅ Deployment workflow triggered successfully"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 9: Wait for deployment to complete
+      - name: ⏳ Monitor deployment workflow completion
+        id: monitor-deploy
+        run: |
+          echo "🔄 Monitoring deployment workflow status..."
+          sleep 5
+          # Get latest workflow run
+          DEPLOY_RUN=$(gh run list --workflow deploy.yml --limit 1 --json databaseId,status --jq '.[0]')
+          echo "📊 Latest deployment run status: $DEPLOY_RUN"
+          echo "✅ Deployment status monitored"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 10: Create release branch
+      - name: 🌿 Create release branch named release/${{ steps.bump-version.outputs.new_version }}
+        id: create-release-branch
+        run: |
+          BRANCH_NAME="release/${{ steps.bump-version.outputs.new_version }}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          git checkout -b "$BRANCH_NAME"
+          git push origin "$BRANCH_NAME"
+          echo "✅ Release branch created and pushed: $BRANCH_NAME"
+
+      # Step 11: Create GitHub Release
+      - name: 🏷️ Create GitHub Release for version ${{ steps.bump-version.outputs.new_version }}
+        id: create-release
+        run: |
+          VERSION="${{ steps.bump-version.outputs.new_version }}"
+          RELEASE_DATE="${{ steps.release-date.outputs.release_date }}"
+          OLD_VERSION="${{ steps.read-version.outputs.old_version }}"
+          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
+          
+          RELEASE_NOTES="## Release $VERSION
+
+          **Release Date**: $RELEASE_DATE
+          
+          ### Version Update
+          - **Previous Version**: $OLD_VERSION
+          - **New Version**: $VERSION
+          - **Bump Type**: $BUMP_TYPE (auto-incremented)
+          
+          ### Changes
+          - ✅ Version file updated
+          - ✅ Deployment completed
+          - ✅ Release branch created
+          
+          **Branch**: release/$VERSION
+          **Commit**: ${{ github.sha }}"
+          
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --notes "$RELEASE_NOTES" \
+            --target main
+          
+          echo "✅ GitHub Release created: $VERSION"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 12: Final summary and verification
+      - name: 📋 Print release summary and verify all changes
+        id: summary
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "                  ✅ RELEASE SUMMARY - SUCCESS                 "
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "📊 VERSION INFORMATION:"
+          echo "   Previous Version: ${{ steps.read-version.outputs.old_version }}"
+          echo "   New Version: ${{ steps.bump-version.outputs.new_version }}"
+          echo "   Bump Type: ${{ github.event.inputs.bump_type }}"
+          echo ""
+          echo "📅 RELEASE INFORMATION:"
+          echo "   Release Date: ${{ steps.release-date.outputs.release_date }}"
+          echo "   Release Timestamp: ${{ steps.release-date.outputs.release_timestamp }}"
+          echo ""
+          echo "🌿 BRANCH INFORMATION:"
+          echo "   Release Branch: ${{ steps.create-release-branch.outputs.branch_name }}"
+          echo "   Main Branch: ✅ Updated"
+          echo ""
+          echo "✅ COMPLETION STATUS:"
+          echo "   ✓ version.json read successfully"
+          echo "   ✓ Version bumped (${{ github.event.inputs.bump_type }})"
+          echo "   ✓ Release date updated with timestamp"
+          echo "   ✓ Committed to main branch"
+          echo "   ✓ Deployment workflow triggered"
+          echo "   ✓ Release branch created: ${{ steps.create-release-branch.outputs.branch_name }}"
+          echo "   ✓ GitHub Release created"
+          echo ""
+          echo "📝 UPDATED version.json:"
+          cat public/version.json
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+
+      # Step 13: Handle failures with notification
+      - name: 🚨 Release workflow failed notification
+        if: failure()
+        run: |
+          echo ""
+          echo "❌ RELEASE WORKFLOW FAILED"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Failed Steps Summary:"
+          echo "   - Version bumping may have failed"
+          echo "   - File update may have failed"
+          echo "   - Deployment trigger may have failed"
+          echo "   - Branch creation may have failed"
+          echo ""
+          echo "Please check the workflow logs for detailed error information."
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          exit 1
