@@ -1,0 +1,4 @@
+# GitHub Actions workflows - Linux EOL and EOF
+.github/workflows/*.yml text eol=lf end_of_line=lf
+.github/workflows/*.yaml text eol=lf end_of_line=lf
+.github/scripts/*.sh text eol=lf end_of_line=lf
