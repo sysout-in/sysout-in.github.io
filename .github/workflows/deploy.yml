@@ -1,9 +1,8 @@
-name: Deploy Vite to GitHub Pages
+name: Auto Deploy to GitHub Pages
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
 
 permissions:
   contents: read
