@@ -58,6 +58,7 @@ jobs:
            
           # Increment based on input
           INCREMENT_TYPE="${{ github.event.inputs.increment_type }}"
+          echo "DEBUG: INCREMENT_TYPE=$INCREMENT_TYPE"
            
           if [ "$INCREMENT_TYPE" = "major" ]; then
             MAJOR=$((MAJOR + 1))
