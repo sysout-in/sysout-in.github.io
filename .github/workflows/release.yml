@@ -38,7 +38,7 @@ jobs:
         id: version
         run: |
           # Read current version from version.json
-          CURRENT_VERSION=$(grep '"version"' public/version.json | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')
+          CURRENT_VERSION=$(grep '"version"' public/version.json | head -1 | sed 's/.*"v\?"\?\([^"]*\)".*/\1/')
           
           # Parse version parts
           MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
