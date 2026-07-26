@@ -37,12 +37,10 @@ jobs:
       - name: Get current version and auto-increment
         id: version
         run: |
-          # Read current version from version.json using jq for reliable JSON parsing
-          CURRENT_VERSION=$(jq -r '.version' public/version.json | sed 's/^v//')
+          # Read current version from version.json and extract version number (remove 'v' prefix)
+          CURRENT_VERSION=$(cat public/version.json | grep -o '"version": "[^"]*"' | cut -d'"' -f4 | sed 's/^v//')
            
-          # Debug output
-          echo "DEBUG: Raw version from JSON: $(jq -r '.version' public/version.json)"
-          echo "DEBUG: Parsed version: $CURRENT_VERSION"
+          echo "Current version: $CURRENT_VERSION"
            
           # Parse version parts
           MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
@@ -65,15 +63,11 @@ jobs:
            
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
            
-          echo "Current version: v${CURRENT_VERSION}"
           echo "Increment type: ${INCREMENT_TYPE}"
-          echo "New version: v${NEW_VERSION}"
-          echo "DEBUG: Setting output version=${NEW_VERSION}"
-          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "New version: ${NEW_VERSION}"
            
-          # Verify it was set
-          echo "DEBUG: GITHUB_OUTPUT content:"
-          cat $GITHUB_OUTPUT
+          # Set output variable
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Update version in public/version.json
         run: |
