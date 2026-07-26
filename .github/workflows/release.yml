@@ -137,8 +137,8 @@ jobs:
       clean_version: ${{ steps.validate.outputs.clean_version }}
     steps:
       - name: Validate version before release
-       id: validate
-       run: |
+        id: validate
+        run: |
          VERSION="${{ needs.prepare.outputs.version }}"
          echo "Raw version: [$VERSION]"
            
