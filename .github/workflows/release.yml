@@ -37,8 +37,8 @@ jobs:
       - name: Get current version and auto-increment
         id: version
         run: |
-          # Read current version from version.json
-          CURRENT_VERSION=$(grep '"version"' public/version.json | head -1 | sed 's/.*"v\?"\?\([^"]*\)".*/\1/')
+          # Read current version from version.json and remove 'v' prefix if present
+          CURRENT_VERSION=$(grep '"version"' public/version.json | head -1 | grep -o '"v[^"]*"' | tr -d '"v')
           
           # Parse version parts
           MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
@@ -87,14 +87,42 @@ jobs:
 
   build:
     needs: prepare
-    uses: ./.github/workflows/build.yml
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout main (with fresh code after prepare job)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload artifact
+        id: upload
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
 
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [prepare, build]
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
