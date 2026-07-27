@@ -20,6 +20,11 @@ on:
         required: true
         default: false
         type: boolean
+      release_note:
+        description: "Release note"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -96,11 +101,113 @@ jobs:
           }
           EOF
 
+      - name: Update release history in README
+        env:
+          RELEASE_NOTE: ${{ github.event.inputs.release_note }}
+          RELEASE_TYPE: ${{ github.event.inputs.increment_type }}
+          RELEASE_VERSION: v${{ steps.version.outputs.version }}
+          CREATE_RELEASE_BRANCH: ${{ github.event.inputs.create_release_branch }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          RELEASE_DATETIME=$(date -u +'%Y-%m-%d %H:%M UTC')
+          export RELEASE_DATETIME
+          python3 << 'PYTHON_EOF'
+          import os
+          import re
+          from pathlib import Path
+
+          readme_path = Path("README.md")
+          content = readme_path.read_text(encoding="utf-8")
+
+          table_header = "| version | type | Date-Time | Note | release branch |"
+          table_divider = "| --- | --- | --- | --- | --- |"
+          legacy_table_header = "| version | type | Date-Time | Note |"
+          legacy_table_divider = "| --- | --- | --- | --- |"
+
+          release_note = os.environ.get("RELEASE_NOTE", "").strip()
+          if not release_note:
+              release_note = "(no note provided)"
+
+          release_note = release_note.replace("\r\n", "\n").replace("\r", "\n")
+          release_note = "<br>".join(line.strip() for line in release_note.split("\n"))
+          release_note = release_note.replace("|", "\\|")
+
+          release_branch = "-"
+          if (
+              os.environ.get("RELEASE_TYPE") != "none"
+              and os.environ.get("CREATE_RELEASE_BRANCH") == "true"
+          ):
+              branch_name = f"release/{os.environ['RELEASE_VERSION']}"
+              branch_url = (
+                  f"{os.environ['GITHUB_SERVER_URL']}/"
+                  f"{os.environ['GITHUB_REPOSITORY']}/tree/{branch_name}"
+              )
+              release_branch = f"[{branch_name}]({branch_url})"
+
+          row = (
+              f"| {os.environ['RELEASE_VERSION']} | {os.environ['RELEASE_TYPE']} | "
+              f"{os.environ['RELEASE_DATETIME']} | {release_note} | {release_branch} |"
+          )
+
+          def parse_cells(table_row: str) -> list[str]:
+              inner = table_row.strip()[1:-1]
+              return [cell.strip() for cell in re.split(r"(?<!\\)\|", inner)]
+
+          def format_cells(cells: list[str]) -> str:
+              return "| " + " | ".join(cells) + " |"
+
+          if table_header in content:
+              lines = content.splitlines()
+              header_index = lines.index(table_header)
+          elif legacy_table_header in content:
+              lines = content.splitlines()
+              header_index = lines.index(legacy_table_header)
+              lines[header_index] = table_header
+          else:
+              lines = None
+
+          if lines is not None:
+              divider_index = header_index + 1
+              if divider_index >= len(lines):
+                  lines.append(table_divider)
+              elif lines[divider_index].strip() in {table_divider, legacy_table_divider}:
+                  lines[divider_index] = table_divider
+              else:
+                  lines.insert(divider_index, table_divider)
+
+              row_index = divider_index + 1
+              while row_index < len(lines):
+                  stripped = lines[row_index].strip()
+                  if not stripped.startswith("|"):
+                      break
+                  if stripped == table_divider:
+                      row_index += 1
+                      continue
+                  cells = parse_cells(stripped)
+                  if len(cells) == 4:
+                      lines[row_index] = format_cells(cells + ["-"])
+                  row_index += 1
+
+              lines.insert(divider_index + 1, row)
+              updated = "\n".join(lines).rstrip() + "\n"
+          else:
+              release_history_block = (
+                  "\n## Release History\n\n"
+                  f"{table_header}\n"
+                  f"{table_divider}\n"
+                  f"{row}\n"
+              )
+              updated = content.rstrip() + "\n" + release_history_block
+
+          readme_path.write_text(updated, encoding="utf-8")
+          PYTHON_EOF
+
       - name: Commit and push version update
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add public/version.json
+          git add public/version.json README.md
           git commit -m "chore: release v${{ steps.version.outputs.version }}"
           git push origin main
 
