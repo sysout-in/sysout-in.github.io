@@ -4,13 +4,13 @@ on:
   workflow_call:
     inputs:
       build_ref:
-        description: "Git ref/branch to build"
+        description: 'Git ref/branch to build'
         required: false
-        default: "main"
+        default: 'main'
         type: string
     outputs:
       artifact-id:
-        description: "ID of the uploaded artifact"
+        description: 'ID of the uploaded artifact'
         value: ${{ jobs.build.outputs.artifact-id }}
 
 jobs:

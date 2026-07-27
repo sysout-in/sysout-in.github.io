@@ -11,8 +11,8 @@ function App() {
   useEffect(() => {
     const versionUrl = `/version.json?v=${Date.now()}`
     fetch(versionUrl, { cache: 'no-store' })
-      .then(res => res.json())
-      .then(data => setVersion(data.version))
+      .then((res) => res.json())
+      .then((data) => setVersion(data.version))
       .catch(() => setVersion('dev'))
   }, [])
 
@@ -26,7 +26,9 @@ function App() {
         </div>
         <div>
           <h1>Sysout in</h1>
-          <p className="version-badge">Version: <strong>{version}</strong></p>
+          <p className="version-badge">
+            Version: <strong>{version}</strong>
+          </p>
           <p>
             Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
           </p>
