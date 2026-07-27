@@ -97,6 +97,13 @@ jobs:
           git commit -m "chore: release v${{ steps.version.outputs.version }}"
           git push origin main
 
+      - name: Create and push Git tag
+        if: ${{ github.event.inputs.increment_type == 'minor' || github.event.inputs.increment_type == 'major' }}
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
   build:
     needs: [ensure-main, prepare]
     if: ${{ always() && needs.ensure-main.result == 'success' && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') }}
@@ -117,7 +124,7 @@ jobs:
         uses: actions/deploy-pages@v5
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.increment_type == 'minor' || github.event.inputs.increment_type == 'major' }}
+        if: ${{ github.event.inputs.increment_type == 'major' }}
         uses: ncipollo/release-action@v1
         with:
           tag: v${{ needs.prepare.outputs.version }}
