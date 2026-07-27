@@ -9,7 +9,8 @@ function App() {
   const [version, setVersion] = useState('dev')
 
   useEffect(() => {
-    fetch('/version.json')
+    const versionUrl = `/version.json?v=${Date.now()}`
+    fetch(versionUrl, { cache: 'no-store' })
       .then(res => res.json())
       .then(data => setVersion(data.version))
       .catch(() => setVersion('dev'))
