@@ -20,3 +20,9 @@ If you are developing a production application, we recommend using TypeScript wi
 | version | type  | Date-Time            | Note                                                               | release branch                                                                         |
 | ------- | ----- | -------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | v0.1.0  | minor | 2026-07-27 14:49 UTC | GHA updated with (bumps version, release branch, update readme.md) | [release/v0.1.0](https://github.com/sysout-in/sysout-in.github.io/tree/release/v0.1.0) |
+
+## Release History
+
+| version | type | Date-Time | Note | release branch |
+| --- | --- | --- | --- | --- |
+| v0.2.0 | minor | 2026-07-27 15:21 UTC | Switched project tooling from Oxlint to ESLint + Prettier, including new lint/format scripts and updated documentation. | [release/v0.2.0](https://github.com/sysout-in/sysout-in.github.io/tree/release/v0.2.0) |
