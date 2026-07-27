@@ -122,9 +122,6 @@ jobs:
 
           table_header = "| version | type | Date-Time | Note | release branch |"
           table_divider = "| --- | --- | --- | --- | --- |"
-          legacy_table_header = "| version | type | Date-Time | Note |"
-          legacy_table_divider = "| --- | --- | --- | --- |"
-
           release_note = os.environ.get("RELEASE_NOTE", "").strip()
           if not release_note:
               release_note = "(no note provided)"
@@ -150,48 +147,43 @@ jobs:
               f"{os.environ['RELEASE_DATETIME']} | {release_note} | {release_branch} |"
           )
 
+          release_heading_re = re.compile(r"^##\s+Release History\s*$", re.IGNORECASE)
+          any_heading_re = re.compile(r"^##\s+")
+
           def parse_cells(table_row: str) -> list[str]:
+              table_row = table_row.strip()
+              if not (table_row.startswith("|") and table_row.endswith("|")):
+                  return []
               inner = table_row.strip()[1:-1]
               return [cell.strip() for cell in re.split(r"(?<!\\)\|", inner)]
 
           def format_cells(cells: list[str]) -> str:
               return "| " + " | ".join(cells) + " |"
 
-          if table_header in content:
-              lines = content.splitlines()
-              header_index = lines.index(table_header)
-          elif legacy_table_header in content:
-              lines = content.splitlines()
-              header_index = lines.index(legacy_table_header)
-              lines[header_index] = table_header
-          else:
-              lines = None
+          def is_release_header(line: str) -> bool:
+              cells = [c.lower() for c in parse_cells(line)]
+              return len(cells) == 5 and cells == [
+                  "version",
+                  "type",
+                  "date-time",
+                  "note",
+                  "release branch",
+              ]
 
-          if lines is not None:
-              divider_index = header_index + 1
-              if divider_index >= len(lines):
-                  lines.append(table_divider)
-              elif lines[divider_index].strip() in {table_divider, legacy_table_divider}:
-                  lines[divider_index] = table_divider
-              else:
-                  lines.insert(divider_index, table_divider)
+          def next_h2_index(lines: list[str], start: int) -> int:
+              i = start + 1
+              while i < len(lines):
+                  if any_heading_re.match(lines[i].strip()):
+                      return i
+                  i += 1
+              return len(lines)
 
-              row_index = divider_index + 1
-              while row_index < len(lines):
-                  stripped = lines[row_index].strip()
-                  if not stripped.startswith("|"):
-                      break
-                  if stripped == table_divider:
-                      row_index += 1
-                      continue
-                  cells = parse_cells(stripped)
-                  if len(cells) == 4:
-                      lines[row_index] = format_cells(cells + ["-"])
-                  row_index += 1
+          lines = content.splitlines()
+          release_history_indices = [
+              i for i, line in enumerate(lines) if release_heading_re.match(line.strip())
+          ]
 
-              lines.insert(divider_index + 1, row)
-              updated = "\n".join(lines).rstrip() + "\n"
-          else:
+          if not release_history_indices:
               release_history_block = (
                   "\n## Release History\n\n"
                   f"{table_header}\n"
@@ -199,6 +191,55 @@ jobs:
                   f"{row}\n"
               )
               updated = content.rstrip() + "\n" + release_history_block
+          else:
+              primary_heading = release_history_indices[0]
+
+              for duplicate_heading in reversed(release_history_indices[1:]):
+                  duplicate_end = next_h2_index(lines, duplicate_heading)
+                  del lines[duplicate_heading:duplicate_end]
+
+              section_end = next_h2_index(lines, primary_heading)
+
+              header_index = None
+              idx = primary_heading + 1
+              while idx < section_end:
+                  if is_release_header(lines[idx]):
+                      header_index = idx
+                      break
+                  idx += 1
+
+              if header_index is None:
+                  insert_at = section_end
+                  while insert_at > primary_heading and not lines[insert_at - 1].strip():
+                      insert_at -= 1
+                  lines[insert_at:insert_at] = [table_header, table_divider, row]
+              else:
+                  lines[header_index] = table_header
+                  divider_index = header_index + 1
+                  if divider_index >= len(lines):
+                      lines.append(table_divider)
+                  elif lines[divider_index].strip().startswith("|"):
+                      lines[divider_index] = table_divider
+                  else:
+                      lines.insert(divider_index, table_divider)
+
+                  section_end = next_h2_index(lines, primary_heading)
+                  row_index = divider_index + 1
+                  while row_index < section_end:
+                      stripped = lines[row_index].strip()
+                      if not stripped.startswith("|"):
+                          break
+                      if stripped == table_divider:
+                          row_index += 1
+                          continue
+                      cells = parse_cells(stripped)
+                      if len(cells) == 4:
+                          lines[row_index] = format_cells(cells + ["-"])
+                      row_index += 1
+
+                  lines.insert(divider_index + 1, row)
+
+              updated = "\n".join(lines).rstrip() + "\n"
 
           readme_path.write_text(updated, encoding="utf-8")
           PYTHON_EOF
