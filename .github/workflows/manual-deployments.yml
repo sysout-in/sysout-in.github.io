@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       increment_type:
-        description: "Version increment type"
+        description: "Version increment type (auto-creates tags for minor/major)"
         required: true
         default: "none"
         type: choice
@@ -16,7 +16,7 @@ on:
       create_release_branch:
         description: "Create Release branch"
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
