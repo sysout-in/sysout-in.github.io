@@ -13,6 +13,11 @@ on:
           - patch
           - minor
           - major
+      create_release_branch:
+        description: "Create Release branch"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -122,6 +127,24 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+      - name: Checkout main for release branch
+        if: ${{ github.event.inputs.increment_type != 'none' && github.event.inputs.create_release_branch == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create release branch
+        if: ${{ github.event.inputs.increment_type != 'none' && github.event.inputs.create_release_branch == 'true' }}
+        run: |
+          BRANCH="release/v${{ needs.prepare.outputs.version }}"
+          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists on origin; skipping creation."
+            exit 0
+          fi
+          git checkout -b "${BRANCH}"
+          git push origin "${BRANCH}"
 
       - name: Create GitHub Release
         if: ${{ github.event.inputs.increment_type == 'major' }}
