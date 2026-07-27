@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       increment_type:
-        description: "Version increment type (auto-creates tags for minor/major)"
+        description: |
+          Version increment type
+          (auto-tags minor/major)
         required: true
         default: "none"
         type: choice
