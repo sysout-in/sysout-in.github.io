@@ -101,6 +101,8 @@ jobs:
     needs: [ensure-main, prepare]
     if: ${{ always() && needs.ensure-main.result == 'success' && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') }}
     uses: ./.github/workflows/build.yml
+    with:
+      build_ref: main
 
   deploy:
     needs: [prepare, build]
