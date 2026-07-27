@@ -117,7 +117,7 @@ jobs:
         uses: actions/deploy-pages@v5
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.increment_type != 'none' }}
+        if: ${{ github.event.inputs.increment_type == 'minor' || github.event.inputs.increment_type == 'major' }}
         uses: ncipollo/release-action@v1
         with:
           tag: v${{ needs.prepare.outputs.version }}
