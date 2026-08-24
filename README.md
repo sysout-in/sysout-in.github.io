@@ -19,6 +19,7 @@ If you are developing a production application, we recommend using TypeScript wi
 
 | version | type | Date-Time | Note | release branch |
 | --- | --- | --- | --- | --- |
+| v0.4.1 | patch | 2026-08-24 08:11 UTC | Add Auth0 login and protected dashboard | - |
 | v0.4.0 | minor | 2026-08-24 06:40 UTC | Add Auth0 login and protected dashboard | [release/v0.4.0](https://github.com/sysout-in/sysout-in.github.io/tree/release/v0.4.0) |
 | v0.3.0 | minor | 2026-07-27 16:08 UTC | Set up the app foundation with React Router, Axios, Material UI + Material Icons, responsive layouts, and reusable common components. Added light/dark theme support and improved bundle loading with route-based code splitting. | [release/v0.3.0](https://github.com/sysout-in/sysout-in.github.io/tree/release/v0.3.0) |
 | v0.2.0  | minor | 2026-07-27 15:21 UTC | Switched project tooling from Oxlint to ESLint + Prettier, including new lint/format scripts and updated documentation. | [release/v0.2.0](https://github.com/sysout-in/sysout-in.github.io/tree/release/v0.2.0) |
