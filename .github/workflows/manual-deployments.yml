@@ -268,6 +268,8 @@ jobs:
     secrets:
       VITE_AUTH0_DOMAIN: ${{ secrets.VITE_AUTH0_DOMAIN }}
       VITE_AUTH0_CLIENT_ID: ${{ secrets.VITE_AUTH0_CLIENT_ID }}
+      VITE_BRAND_TEXT: ${{ secrets.VITE_BRAND_TEXT }}
+      VITE_BRAND_FAVICON: ${{ secrets.VITE_BRAND_FAVICON }}
 
   deploy:
     needs: [prepare, build]

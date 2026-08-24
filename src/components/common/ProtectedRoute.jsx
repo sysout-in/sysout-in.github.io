@@ -1,4 +1,5 @@
 import { useAuth0 } from '@auth0/auth0-react'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import Stack from '@mui/material/Stack'
@@ -7,8 +8,13 @@ import Button from '@mui/material/Button'
 import { useNavigate } from 'react-router-dom'
 
 function ProtectedRoute({ children }) {
-  const { isAuthenticated, isLoading, loginWithRedirect } = useAuth0()
+  const { isAuthenticated, isLoading, loginWithRedirect, error } = useAuth0()
   const navigate = useNavigate()
+  const deniedMessage =
+    error?.error === 'access_denied'
+      ? error.error_description?.trim() ||
+        'Your Google account is not approved for this application.'
+      : null
 
   if (isLoading) {
     return (
@@ -39,8 +45,9 @@ function ProtectedRoute({ children }) {
         <Stack spacing={2} alignItems="center" textAlign="center">
           <Typography variant="h5">Access Denied</Typography>
           <Typography variant="body2" color="text.secondary">
-            You need to be logged in to access this page.
+            {deniedMessage ?? 'You need to be logged in to access this page.'}
           </Typography>
+          {deniedMessage && <Alert severity="error">{deniedMessage}</Alert>}
           <Stack direction="row" spacing={1}>
             <Button variant="contained" onClick={() => loginWithRedirect()}>
               Sign in with Google

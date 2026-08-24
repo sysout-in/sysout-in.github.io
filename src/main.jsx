@@ -10,12 +10,23 @@ const auth0Domain = (import.meta.env.VITE_AUTH0_DOMAIN ?? '')
   .replace(/^https?:\/\//, '')
   .replace(/\/$/, '')
 const auth0ClientId = (import.meta.env.VITE_AUTH0_CLIENT_ID ?? '').trim()
+const brandText = (import.meta.env.VITE_BRAND_TEXT ?? '').trim()
+const brandFavicon = (import.meta.env.VITE_BRAND_FAVICON ?? '').trim()
 
-if (!auth0Domain || !auth0ClientId) {
+if (!auth0Domain || !auth0ClientId || !brandText || !brandFavicon) {
   throw new Error(
-    'Missing Auth0 config: set VITE_AUTH0_DOMAIN and VITE_AUTH0_CLIENT_ID for this environment.'
+    'Missing config: set VITE_AUTH0_DOMAIN, VITE_AUTH0_CLIENT_ID, VITE_BRAND_TEXT, and VITE_BRAND_FAVICON for this environment.'
   )
 }
+
+document.title = brandText
+let favicon = document.querySelector("link[rel='icon']")
+if (!favicon) {
+  favicon = document.createElement('link')
+  favicon.setAttribute('rel', 'icon')
+  document.head.appendChild(favicon)
+}
+favicon.setAttribute('href', brandFavicon)
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

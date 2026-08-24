@@ -13,6 +13,10 @@ on:
         required: true
       VITE_AUTH0_CLIENT_ID:
         required: true
+      VITE_BRAND_TEXT:
+        required: true
+      VITE_BRAND_FAVICON:
+        required: true
     outputs:
       artifact-id:
         description: 'ID of the uploaded artifact'
@@ -45,6 +49,8 @@ jobs:
         env:
           VITE_AUTH0_DOMAIN: ${{ secrets.VITE_AUTH0_DOMAIN }}
           VITE_AUTH0_CLIENT_ID: ${{ secrets.VITE_AUTH0_CLIENT_ID }}
+          VITE_BRAND_TEXT: ${{ secrets.VITE_BRAND_TEXT }}
+          VITE_BRAND_FAVICON: ${{ secrets.VITE_BRAND_FAVICON }}
         run: npm run build
 
       - name: Upload artifact
