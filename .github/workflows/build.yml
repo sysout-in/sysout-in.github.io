@@ -8,6 +8,11 @@ on:
         required: false
         default: 'main'
         type: string
+    secrets:
+      VITE_AUTH0_DOMAIN:
+        required: true
+      VITE_AUTH0_CLIENT_ID:
+        required: true
     outputs:
       artifact-id:
         description: 'ID of the uploaded artifact'
