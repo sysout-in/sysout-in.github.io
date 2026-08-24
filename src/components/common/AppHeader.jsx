@@ -10,13 +10,16 @@ import ListItemButton from '@mui/material/ListItemButton'
 import ListItemText from '@mui/material/ListItemText'
 import Box from '@mui/material/Box'
 import Stack from '@mui/material/Stack'
+import Divider from '@mui/material/Divider'
 import MenuIcon from '@mui/icons-material/Menu'
 import { useLocation, useNavigate } from 'react-router-dom'
 import ThemeModeToggle from './ThemeModeToggle'
+import AuthButton from './AuthButton'
 
 const navItems = [
   { label: 'Home', path: '/' },
   { label: 'About', path: '/about' },
+  { label: 'Dashboard', path: '/dashboard' },
 ]
 
 function AppHeader({ mode, onToggleMode }) {
@@ -41,6 +44,7 @@ function AppHeader({ mode, onToggleMode }) {
           Sysout in
         </Typography>
 
+        {/* Desktop nav */}
         <Box sx={{ display: { xs: 'none', md: 'block' } }}>
           <Stack direction="row" spacing={1} alignItems="center">
             {navItems.map((item) => (
@@ -54,10 +58,13 @@ function AppHeader({ mode, onToggleMode }) {
               </Button>
             ))}
             <ThemeModeToggle mode={mode} onToggle={onToggleMode} />
+            <AuthButton />
           </Stack>
         </Box>
 
-        <Box sx={{ display: { xs: 'flex', md: 'none' }, alignItems: 'center' }}>
+        {/* Mobile nav */}
+        <Box sx={{ display: { xs: 'flex', md: 'none' }, alignItems: 'center', gap: 0.5 }}>
+          <AuthButton />
           <ThemeModeToggle mode={mode} onToggle={onToggleMode} />
           <IconButton color="inherit" onClick={() => setDrawerOpen(true)} aria-label="open menu">
             <MenuIcon />
@@ -78,6 +85,7 @@ function AppHeader({ mode, onToggleMode }) {
               </ListItemButton>
             ))}
           </List>
+          <Divider />
         </Box>
       </Drawer>
     </AppBar>

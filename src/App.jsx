@@ -7,9 +7,11 @@ import useMediaQuery from '@mui/material/useMediaQuery'
 import { Routes, Route } from 'react-router-dom'
 import { getAppTheme } from './theme/getAppTheme'
 import AppHeader from './components/common/AppHeader'
+import ProtectedRoute from './components/common/ProtectedRoute'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const AboutPage = lazy(() => import('./pages/AboutPage'))
+const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'))
 
 function App() {
@@ -30,6 +32,14 @@ function App() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/about" element={<AboutPage />} />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <DashboardPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </Suspense>
