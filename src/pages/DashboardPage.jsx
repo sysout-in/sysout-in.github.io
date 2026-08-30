@@ -315,6 +315,150 @@ function createTableKey(schemaName, tableName) {
   return `${schemaName}.${tableName}`
 }
 
+const DIAGRAM_NODE_WIDTH = 240
+const DIAGRAM_HEADER_HEIGHT = 56
+const DIAGRAM_ROW_HEIGHT = 26
+const DIAGRAM_NODE_PADDING = 14
+const DIAGRAM_LAYER_GAP = 90
+const DIAGRAM_COLUMN_GAP = 80
+
+function getDiagramNodeSize(node) {
+  const fieldCount =
+    (node.table.primaryKey?.length ?? 0) +
+    (node.table.foreignKeys?.length ?? 0) +
+    Math.max(
+      0,
+      (node.table.columns?.length ?? 0) -
+        (node.table.primaryKey?.length ?? 0) -
+        (node.table.foreignKeys?.length ?? 0)
+    )
+
+  return {
+    width: DIAGRAM_NODE_WIDTH,
+    height: DIAGRAM_HEADER_HEIGHT + DIAGRAM_NODE_PADDING * 2 + fieldCount * DIAGRAM_ROW_HEIGHT,
+  }
+}
+
+function buildDiagramInitialPositions(graph) {
+  const positions = {}
+  const layerByKey = new Map()
+
+  const visit = (node, layer, ancestry = new Set()) => {
+    if (!node || ancestry.has(node.key)) {
+      return
+    }
+
+    const currentLayer = layerByKey.get(node.key)
+    if (currentLayer === undefined || layer > currentLayer) {
+      layerByKey.set(node.key, layer)
+    }
+
+    const nextAncestry = new Set(ancestry)
+    nextAncestry.add(node.key)
+    node.childLinks.forEach((link) => {
+      visit(graph.nodes.get(link.sourceKey), layer + 1, nextAncestry)
+    })
+  }
+
+  graph.roots.forEach((node) => visit(node, 0))
+  graph.leftovers.forEach((node) => {
+    if (!layerByKey.has(node.key)) {
+      layerByKey.set(node.key, 0)
+    }
+  })
+
+  const layers = new Map()
+  Array.from(graph.nodes.values()).forEach((node) => {
+    const layer = layerByKey.get(node.key) ?? 0
+    if (!layers.has(layer)) {
+      layers.set(layer, [])
+    }
+    layers.get(layer).push(node)
+  })
+
+  let maxX = 0
+  let maxY = 0
+
+  Array.from(layers.entries())
+    .sort(([left], [right]) => left - right)
+    .forEach(([layer, nodes]) => {
+      nodes
+        .slice()
+        .sort((left, right) => {
+          if (left.schemaName === right.schemaName) {
+            return left.tableName.localeCompare(right.tableName)
+          }
+
+          return left.schemaName.localeCompare(right.schemaName)
+        })
+        .forEach((node, index) => {
+          const size = getDiagramNodeSize(node)
+          const x = 48 + index * (size.width + DIAGRAM_COLUMN_GAP)
+          const y = 36 + layer * (size.height + DIAGRAM_LAYER_GAP)
+          positions[node.key] = { x, y }
+          maxX = Math.max(maxX, x + size.width)
+          maxY = Math.max(maxY, y + size.height)
+        })
+    })
+
+  return { positions, width: maxX + 96, height: maxY + 96 }
+}
+
+function getDiagramAnchorRect(position, size, side) {
+  const centerX = position.x + size.width / 2
+  const centerY = position.y + size.height / 2
+
+  switch (side) {
+    case 'left':
+      return { x: position.x, y: centerY }
+    case 'right':
+      return { x: position.x + size.width, y: centerY }
+    case 'top':
+      return { x: centerX, y: position.y }
+    case 'bottom':
+    default:
+      return { x: centerX, y: position.y + size.height }
+  }
+}
+
+function buildDiagramConnector(sourcePosition, sourceSize, targetPosition, targetSize) {
+  const sourceCenter = {
+    x: sourcePosition.x + sourceSize.width / 2,
+    y: sourcePosition.y + sourceSize.height / 2,
+  }
+  const targetCenter = {
+    x: targetPosition.x + targetSize.width / 2,
+    y: targetPosition.y + targetSize.height / 2,
+  }
+  const dx = targetCenter.x - sourceCenter.x
+  const dy = targetCenter.y - sourceCenter.y
+
+  const horizontal = Math.abs(dx) >= Math.abs(dy)
+  const sourceSide = horizontal ? (dx >= 0 ? 'right' : 'left') : dy >= 0 ? 'bottom' : 'top'
+  const targetSide = horizontal ? (dx >= 0 ? 'left' : 'right') : dy >= 0 ? 'top' : 'bottom'
+  const start = getDiagramAnchorRect(sourcePosition, sourceSize, sourceSide)
+  const end = getDiagramAnchorRect(targetPosition, targetSize, targetSide)
+
+  const midX = horizontal ? (start.x + end.x) / 2 : start.x
+  const midY = horizontal ? start.y : (start.y + end.y) / 2
+
+  const points = horizontal
+    ? [
+        [start.x, start.y],
+        [midX, start.y],
+        [midX, end.y],
+        [end.x, end.y],
+      ]
+    : [
+        [start.x, start.y],
+        [start.x, midY],
+        [end.x, midY],
+        [end.x, end.y],
+      ]
+
+  return { start, end, points }
+}
+
 function createVirtualAnchor(element) {
   const rect = element.getBoundingClientRect()
 
@@ -848,6 +992,10 @@ function DashboardPage() {
   const [fkHoverPreview, setFkHoverPreview] = useState(null)
   const fkHoverCloseTimerRef = useRef(null)
   const searchInputRef = useRef(null)
+  const diagramBoardRef = useRef(null)
+  const diagramDragRef = useRef(null)
+  const [diagramDraggingKey, setDiagramDraggingKey] = useState('')
+  const [diagramPositions, setDiagramPositions] = useState({})
 
   const isTableExpanded = useCallback(
     (schemaName, tableName) => activeTableKey === `${schemaName}.${tableName}`,
@@ -1573,27 +1721,386 @@ function DashboardPage() {
     return map
   }, [schemas])
 
-  const relationshipEdges = useMemo(() => {
-    return schemas.flatMap((schema) =>
-      schema.tables.flatMap((table) =>
-        (table.foreignKeys ?? []).map((foreignKey) => {
+  const relationshipGraph = useMemo(() => {
+    const nodes = new Map()
+
+    schemas.forEach((schema) => {
+      schema.tables.forEach((table) => {
+        const key = createTableKey(schema.schemaName, table.tableName)
+        nodes.set(key, {
+          key,
+          schemaName: schema.schemaName,
+          tableName: table.tableName,
+          table,
+          pkCount: table.primaryKey?.length ?? 0,
+          fkCount: table.foreignKeys?.length ?? 0,
+          inboundCount: 0,
+          parentLinks: [],
+          childLinks: [],
+        })
+      })
+    })
+
+    schemas.forEach((schema) => {
+      schema.tables.forEach((table) => {
+        const sourceKey = createTableKey(schema.schemaName, table.tableName)
+        ;(table.foreignKeys ?? []).forEach((foreignKey) => {
           const resolvedTable = resolveReferencedTableLocation(
             schemas,
             schema.schemaName,
             foreignKey.references
           )
 
-          return {
+          if (!resolvedTable) {
+            return
+          }
+
+          const targetKey = createTableKey(resolvedTable.schemaName, resolvedTable.table.tableName)
+          const sourceNode = nodes.get(sourceKey)
+          const targetNode = nodes.get(targetKey)
+
+          if (!sourceNode || !targetNode) {
+            return
+          }
+
+          const link = {
+            sourceKey,
+            targetKey,
             sourceSchemaName: schema.schemaName,
             sourceTableName: table.tableName,
             sourceColumnName: foreignKey.column,
-            targetSchemaName: resolvedTable?.schemaName ?? '',
-            targetTableName: resolvedTable?.table.tableName ?? '',
+            targetSchemaName: resolvedTable.schemaName,
+            targetTableName: resolvedTable.table.tableName,
+            targetPrimaryKey: resolvedTable.table.primaryKey ?? [],
           }
+
+          sourceNode.parentLinks.push(link)
+          targetNode.childLinks.push(link)
+          targetNode.inboundCount += 1
         })
-      )
-    )
+      })
+    })
+
+    const roots = Array.from(nodes.values())
+      .filter((node) => node.parentLinks.length === 0)
+      .sort((left, right) => {
+        if (left.schemaName === right.schemaName) {
+          return left.tableName.localeCompare(right.tableName)
+        }
+
+        return left.schemaName.localeCompare(right.schemaName)
+      })
+
+    const renderableKeys = new Set()
+    const markRenderable = (node) => {
+      if (!node || renderableKeys.has(node.key)) {
+        return
+      }
+
+      renderableKeys.add(node.key)
+      node.childLinks.forEach((link) => {
+        const childNode = nodes.get(link.sourceKey)
+        markRenderable(childNode)
+      })
+    }
+
+    roots.forEach(markRenderable)
+
+    const leftovers = Array.from(nodes.values())
+      .filter((node) => !renderableKeys.has(node.key))
+      .sort((left, right) => {
+        if (left.schemaName === right.schemaName) {
+          return left.tableName.localeCompare(right.tableName)
+        }
+
+        return left.schemaName.localeCompare(right.schemaName)
+      })
+
+    return {
+      nodes,
+      roots,
+      leftovers,
+      totalLinks: Array.from(nodes.values()).reduce(
+        (count, node) => count + node.childLinks.length,
+        0
+      ),
+    }
   }, [schemas])
+
+  const diagramLayout = useMemo(
+    () => buildDiagramInitialPositions(relationshipGraph),
+    [relationshipGraph]
+  )
+
+  useEffect(() => {
+    setDiagramPositions((current) => {
+      const nextPositions = {}
+
+      relationshipGraph.nodes.forEach((node, key) => {
+        nextPositions[key] = current[key] ?? diagramLayout.positions[key]
+      })
+
+      return nextPositions
+    })
+  }, [diagramLayout, relationshipGraph])
+
+  useEffect(() => {
+    if (!diagramDraggingKey) {
+      return undefined
+    }
+
+    const handleMove = (event) => {
+      const dragState = diagramDragRef.current
+      const board = diagramBoardRef.current
+      if (!dragState || !board) {
+        return
+      }
+
+      const boardRect = board.getBoundingClientRect()
+      const nextX = event.clientX - boardRect.left + board.scrollLeft - dragState.offsetX
+      const nextY = event.clientY - boardRect.top + board.scrollTop - dragState.offsetY
+
+      setDiagramPositions((current) => ({
+        ...current,
+        [dragState.key]: {
+          x: Math.max(24, nextX),
+          y: Math.max(24, nextY),
+        },
+      }))
+    }
+
+    const handleUp = () => {
+      diagramDragRef.current = null
+      setDiagramDraggingKey('')
+    }
+
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+
+    return () => {
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', handleUp)
+    }
+  }, [diagramDraggingKey])
+
+  const handleDiagramPointerDown = useCallback(
+    (nodeKey, event) => {
+      if (event.button !== 0) {
+        return
+      }
+
+      const board = diagramBoardRef.current
+      const nodePosition = diagramPositions[nodeKey]
+      if (!board || !nodePosition) {
+        return
+      }
+
+      const nodeSize = relationshipGraph.nodes.get(nodeKey)
+      if (!nodeSize) {
+        return
+      }
+
+      const bounds = event.currentTarget.getBoundingClientRect()
+      diagramDragRef.current = {
+        key: nodeKey,
+        offsetX: event.clientX - bounds.left,
+        offsetY: event.clientY - bounds.top,
+      }
+      setDiagramDraggingKey(nodeKey)
+      event.currentTarget.setPointerCapture(event.pointerId)
+      event.preventDefault()
+    },
+    [diagramPositions, relationshipGraph.nodes]
+  )
+
+  const diagramBoardMetrics = useMemo(() => {
+    let width = diagramLayout.width
+    let height = diagramLayout.height
+
+    relationshipGraph.nodes.forEach((node, key) => {
+      const position = diagramPositions[key] ?? diagramLayout.positions[key]
+      const size = getDiagramNodeSize(node)
+      if (position) {
+        width = Math.max(width, position.x + size.width + 96)
+        height = Math.max(height, position.y + size.height + 96)
+      }
+    })
+
+    return { width, height }
+  }, [diagramLayout, diagramPositions, relationshipGraph])
+
+  const renderRelationshipBranch = (node, depth = 0, ancestry = new Set()) => {
+    const nextAncestry = new Set(ancestry)
+    nextAncestry.add(node.key)
+    const isActiveTable = activeTableKey === node.key
+    const attributeRows = [
+      ...((node.table.primaryKey ?? []).map((columnName) => ({
+        columnName,
+        kind: 'PK',
+        note: 'primary key',
+      })) ?? []),
+      ...((node.table.foreignKeys ?? []).map((foreignKey) => {
+        const resolvedTable = resolveReferencedTableLocation(
+          schemas,
+          node.schemaName,
+          foreignKey.references
+        )
+
+        return {
+          columnName: foreignKey.column,
+          kind: 'FK',
+          note: `references ${resolvedTable ? `${resolvedTable.schemaName}.${resolvedTable.table.tableName}` : foreignKey.references}`,
+        }
+      }) ?? []),
+      ...node.table.columns
+        .filter((columnName) => !(node.table.primaryKey ?? []).includes(columnName))
+        .filter((columnName) => !(node.table.foreignKeys ?? []).some((foreignKey) => foreignKey.column === columnName))
+        .map((columnName) => ({
+          columnName,
+          kind: 'ATTR',
+          note: 'attribute',
+        })),
+    ]
+
+    return (
+      <Stack key={node.key} spacing={1.25} sx={{ pl: depth > 0 ? 2 : 0 }}>
+        <Paper
+          variant="outlined"
+          sx={{
+            overflow: 'hidden',
+            borderRadius: 2,
+            borderColor: isActiveTable ? 'primary.main' : 'divider',
+            bgcolor: isActiveTable ? alpha(theme.palette.primary.main, 0.05) : 'background.paper',
+          }}
+        >
+          <Box
+            sx={{
+              px: 1.5,
+              py: 1,
+              bgcolor: isActiveTable
+                ? alpha(theme.palette.primary.main, 0.12)
+                : alpha(theme.palette.action.hover, 0.6),
+              borderBottom: `1px solid ${theme.palette.divider}`,
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+              <Box>
+                <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.1 }}>
+                  {node.tableName}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {node.schemaName}.{node.tableName}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                <Chip label={`PK ${node.pkCount}`} size="small" color="warning" variant="outlined" />
+                <Chip label={`FK ${node.fkCount}`} size="small" color="info" variant="outlined" />
+                <Chip
+                  label={`IN ${node.inboundCount}`}
+                  size="small"
+                  color="secondary"
+                  variant={node.inboundCount > 0 ? 'filled' : 'outlined'}
+                />
+              </Stack>
+            </Stack>
+          </Box>
+
+          <Box sx={{ px: 1.5, py: 1 }}>
+            <Stack spacing={0.25} sx={{ fontFamily: theme.typography.fontFamily }}>
+              {attributeRows.map((field) => (
+                <Stack
+                  key={`${node.key}-${field.kind}-${field.columnName}`}
+                  direction="row"
+                  spacing={1}
+                  alignItems="baseline"
+                  justifyContent="space-between"
+                  sx={{
+                    py: 0.25,
+                    borderBottom: `1px solid ${alpha(theme.palette.divider, 0.35)}`,
+                    '&:last-of-type': { borderBottom: 'none' },
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontFamily: 'monospace',
+                      fontWeight: field.kind === 'PK' ? 700 : 500,
+                      color:
+                        field.kind === 'PK'
+                          ? theme.palette.warning.main
+                          : field.kind === 'FK'
+                            ? theme.palette.info.main
+                            : 'text.primary',
+                    }}
+                  >
+                    {field.columnName}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'right' }}>
+                    {field.kind} {field.note}
+                  </Typography>
+                </Stack>
+              ))}
+            </Stack>
+
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+              <Chip
+                label="Open table"
+                size="small"
+                color="primary"
+                variant="outlined"
+                clickable
+                onClick={() => navigateToTable(node.schemaName, node.tableName)}
+              />
+              <Chip label={`${node.table.columns.length} columns`} size="small" variant="outlined" />
+            </Stack>
+          </Box>
+        </Paper>
+
+        {node.childLinks.length > 0 ? (
+          <Stack spacing={1.25} sx={{ pl: 2 }}>
+            {node.childLinks.map((link) => {
+              const childNode = relationshipGraph.nodes.get(link.sourceKey)
+
+              if (!childNode) {
+                return null
+              }
+
+              const isRecursive = nextAncestry.has(childNode.key)
+
+              return (
+                <Box key={`${node.key}-${link.sourceKey}-${link.sourceColumnName}`}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ color: 'text.secondary' }}>
+                    <Chip label="1" size="small" color="success" variant="outlined" />
+                    <Box
+                      sx={{
+                        flex: 1,
+                        borderTop: `2px solid ${alpha(theme.palette.divider, 0.9)}`,
+                        minWidth: 24,
+                        position: 'relative',
+                      }}
+                    />
+                    <Chip label="0..*" size="small" color="error" variant="outlined" />
+                    <Typography variant="body2">
+                      {link.sourceTableName}.{link.sourceColumnName} {'->'} {link.targetTableName}.
+                      {link.targetPrimaryKey[0] ?? 'id'}
+                    </Typography>
+                  </Stack>
+
+                  {isRecursive ? (
+                    <Alert severity="info" sx={{ mt: 1 }}>
+                      Recursive link back to {childNode.schemaName}.{childNode.tableName}
+                    </Alert>
+                  ) : (
+                    <Box sx={{ mt: 1 }}>{renderRelationshipBranch(childNode, depth + 1, nextAncestry)}</Box>
+                  )}
+                </Box>
+              )
+            })}
+          </Stack>
+        ) : null}
+      </Stack>
+    )
+  }
 
   return (
     <PageContainer>
@@ -1797,44 +2304,229 @@ function DashboardPage() {
             </SectionCard>
 
             {isGraphVisible ? (
-              <SectionCard title="Relationship graph">
-                {relationshipEdges.length > 0 ? (
-                  <Stack spacing={1}>
-                    {relationshipEdges.map((edge) => (
-                      <Stack
-                        key={`${edge.sourceSchemaName}.${edge.sourceTableName}.${edge.sourceColumnName}`}
-                        direction="row"
-                        spacing={1}
-                        alignItems="center"
-                        flexWrap="wrap"
-                        useFlexGap
-                      >
-                        <Chip
-                          label={edge.sourceTableName}
-                          color="primary"
-                          variant="outlined"
-                          clickable
-                          onClick={() => navigateToTable(edge.sourceSchemaName, edge.sourceTableName)}
-                        />
-                        <Chip
-                          label={`via ${edge.sourceColumnName}`}
-                          size="small"
-                          variant="outlined"
-                          color="info"
-                        />
-                        <Chip
-                          label={edge.targetTableName || 'unresolved'}
-                          color="secondary"
-                          variant="filled"
-                          clickable={Boolean(edge.targetTableName)}
-                          onClick={
-                            edge.targetTableName
-                              ? () => navigateToTable(edge.targetSchemaName, edge.targetTableName)
-                              : undefined
+              <SectionCard title="ER / UML diagram">
+                {relationshipGraph.totalLinks > 0 ? (
+                  <Stack spacing={1.5}>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip
+                        label={`${relationshipGraph.roots.length} root table${relationshipGraph.roots.length === 1 ? '' : 's'}`}
+                        color="primary"
+                        variant="outlined"
+                      />
+                      <Chip
+                        label={`${relationshipGraph.totalLinks} FK link${relationshipGraph.totalLinks === 1 ? '' : 's'}`}
+                        color="secondary"
+                        variant="outlined"
+                      />
+                      <Chip label="1 = referenced row" size="small" variant="outlined" />
+                      <Chip label="0..* = child rows" size="small" variant="outlined" />
+                      <Chip label="Drag cards by the header" size="small" variant="outlined" />
+                    </Stack>
+
+                    <Box
+                      ref={diagramBoardRef}
+                      sx={{
+                        position: 'relative',
+                        overflow: 'auto',
+                        minHeight: 720,
+                        borderRadius: 2,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                        backgroundColor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.info.main, 0.08)
+                            : alpha(theme.palette.info.light, 0.12),
+                        backgroundImage:
+                          'linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.2) 1px, transparent 1px)',
+                        backgroundSize: '40px 40px',
+                      }}
+                    >
+                      <Box sx={{ position: 'relative', width: diagramBoardMetrics.width, height: diagramBoardMetrics.height }}>
+                        <Box
+                          component="svg"
+                          viewBox={`0 0 ${diagramBoardMetrics.width} ${diagramBoardMetrics.height}`}
+                          preserveAspectRatio="none"
+                          sx={{
+                            position: 'absolute',
+                            inset: 0,
+                            width: '100%',
+                            height: '100%',
+                            pointerEvents: 'none',
+                          }}
+                        >
+                          <defs>
+                            <marker
+                              id="diagram-arrow"
+                              markerWidth="10"
+                              markerHeight="10"
+                              refX="8"
+                              refY="5"
+                              orient="auto"
+                              markerUnits="strokeWidth"
+                            >
+                              <path d="M 0 0 L 10 5 L 0 10 z" fill={theme.palette.text.secondary} />
+                            </marker>
+                          </defs>
+                          {Array.from(relationshipGraph.nodes.values()).flatMap((node) =>
+                            node.childLinks.map((link) => {
+                              const sourceNode = relationshipGraph.nodes.get(link.sourceKey)
+                              const targetNode = relationshipGraph.nodes.get(link.targetKey)
+                              const sourcePosition =
+                                diagramPositions[link.sourceKey] ??
+                                diagramLayout.positions[link.sourceKey]
+                              const targetPosition =
+                                diagramPositions[node.key] ?? diagramLayout.positions[node.key]
+
+                              if (!sourceNode || !targetNode || !sourcePosition || !targetPosition) {
+                                return null
+                              }
+
+                              const sourceSize = getDiagramNodeSize(sourceNode)
+                              const targetSize = getDiagramNodeSize(targetNode)
+                              const connector = buildDiagramConnector(
+                                sourcePosition,
+                                sourceSize,
+                                targetPosition,
+                                targetSize
+                              )
+                              const pathD = connector.points
+                                .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point[0]} ${point[1]}`)
+                                .join(' ')
+                              const labelX = (connector.start.x + connector.end.x) / 2
+                              const labelY = (connector.start.y + connector.end.y) / 2
+                              const startLabelX = connector.points[0][0] + (connector.start.x < connector.end.x ? 12 : -12)
+                              const startLabelY = connector.points[0][1] - 6
+                              const endLabelX = connector.points[connector.points.length - 1][0] + (connector.start.x < connector.end.x ? -12 : 12)
+                              const endLabelY = connector.points[connector.points.length - 1][1] - 6
+
+                              return (
+                                <g key={`${node.key}-${link.sourceKey}-${link.sourceColumnName}`}>
+                                  <path
+                                    d={pathD}
+                                    fill="none"
+                                    stroke={alpha(theme.palette.text.secondary, 0.9)}
+                                    strokeWidth="2"
+                                    markerEnd="url(#diagram-arrow)"
+                                  />
+                                  <circle cx={connector.start.x} cy={connector.start.y} r="3.5" fill={theme.palette.success.main} />
+                                  <circle cx={connector.end.x} cy={connector.end.y} r="3.5" fill={theme.palette.error.main} />
+                                  <text x={startLabelX} y={startLabelY} fill={theme.palette.success.main} fontSize="12" fontWeight="700">
+                                    1
+                                  </text>
+                                  <text x={endLabelX} y={endLabelY} fill={theme.palette.error.main} fontSize="12" fontWeight="700">
+                                    0..*
+                                  </text>
+                                  <text
+                                    x={labelX}
+                                    y={labelY - 8}
+                                    textAnchor="middle"
+                                    fill={theme.palette.text.secondary}
+                                    fontSize="11"
+                                  >
+                                    {link.sourceColumnName} {'->'} {link.targetTableName}.{link.targetPrimaryKey[0] ?? 'id'}
+                                  </text>
+                                </g>
+                              )
+                            })
+                          )}
+                        </Box>
+
+                        {Array.from(relationshipGraph.nodes.values()).map((node) => {
+                          const position = diagramPositions[node.key] ?? diagramLayout.positions[node.key]
+                          const size = getDiagramNodeSize(node)
+                          if (!position) {
+                            return null
                           }
-                        />
-                      </Stack>
-                    ))}
+
+                          const isActiveTable = activeTableKey === node.key
+                          const fields = [
+                            ...((node.table.primaryKey ?? []).map((columnName) => ({
+                              columnName,
+                              kind: 'PK',
+                            })) ?? []),
+                            ...((node.table.foreignKeys ?? []).map((foreignKey) => ({
+                              columnName: foreignKey.column,
+                              kind: 'FK',
+                            })) ?? []),
+                            ...node.table.columns
+                              .filter((columnName) => !(node.table.primaryKey ?? []).includes(columnName))
+                              .filter(
+                                (columnName) =>
+                                  !(node.table.foreignKeys ?? []).some(
+                                    (foreignKey) => foreignKey.column === columnName
+                                  )
+                              )
+                              .map((columnName) => ({
+                                columnName,
+                                kind: 'ATTR',
+                              })),
+                          ]
+
+                          return (
+                            <Paper
+                              key={node.key}
+                              elevation={isActiveTable ? 5 : 2}
+                              onPointerDown={(event) => handleDiagramPointerDown(node.key, event)}
+                              sx={{
+                                position: 'absolute',
+                                left: position.x,
+                                top: position.y,
+                                width: size.width,
+                                minHeight: size.height,
+                                overflow: 'hidden',
+                                borderRadius: 2,
+                                border: `2px solid ${isActiveTable ? theme.palette.primary.main : alpha(theme.palette.primary.dark, 0.9)}`,
+                                backgroundColor:
+                                  theme.palette.mode === 'dark'
+                                    ? theme.palette.background.paper
+                                    : alpha(theme.palette.common.white, 0.95),
+                                cursor: diagramDraggingKey === node.key ? 'grabbing' : 'grab',
+                                userSelect: 'none',
+                                touchAction: 'none',
+                              }}
+                            >
+                              <Box
+                                sx={{
+                                  px: 1.5,
+                                  py: 1,
+                                  textAlign: 'center',
+                                  backgroundColor: alpha(theme.palette.info.main, 0.08),
+                                  borderBottom: `1px solid ${alpha(theme.palette.primary.dark, 0.9)}`,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.1 }}>
+                                  {node.tableName}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {node.schemaName}.{node.tableName}
+                                </Typography>
+                              </Box>
+                              <Box sx={{ px: 1.25, py: 1 }}>
+                                {fields.map((field) => (
+                                  <Typography
+                                    key={`${node.key}-${field.kind}-${field.columnName}`}
+                                    variant="body2"
+                                    sx={{
+                                      fontFamily: 'monospace',
+                                      color:
+                                        field.kind === 'PK'
+                                          ? theme.palette.warning.main
+                                          : field.kind === 'FK'
+                                            ? theme.palette.info.main
+                                            : 'text.primary',
+                                      lineHeight: 1.3,
+                                    }}
+                                  >
+                                    {field.columnName}
+                                    {field.kind === 'PK' ? ' (PK)' : field.kind === 'FK' ? ' (FK)' : ''}
+                                  </Typography>
+                                ))}
+                              </Box>
+                            </Paper>
+                          )
+                        })}
+                      </Box>
+                    </Box>
                   </Stack>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
