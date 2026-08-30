@@ -550,12 +550,15 @@ function DashboardPage() {
 
   const getColumnPalette = useCallback(
     (role) => {
+      const headerText =
+        theme.palette.mode === 'dark' ? theme.palette.common.black : theme.palette.common.white
+
       if (role === 'pk') {
         return {
           bg: alpha(theme.palette.warning.main, 0.015),
           border: theme.palette.warning.main,
           headerBg: theme.palette.warning.main,
-          headerText: theme.palette.common.white,
+          headerText,
           dataText: theme.palette.text.primary,
         }
       }
@@ -565,7 +568,7 @@ function DashboardPage() {
           bg: alpha(theme.palette.info.main, 0.015),
           border: theme.palette.info.main,
           headerBg: theme.palette.info.main,
-          headerText: theme.palette.common.white,
+          headerText,
           dataText: theme.palette.text.primary,
         }
       }
@@ -574,7 +577,7 @@ function DashboardPage() {
         bg: alpha(theme.palette.primary.main, 0.009),
         border: theme.palette.primary.main,
         headerBg: theme.palette.primary.main,
-        headerText: theme.palette.common.white,
+        headerText,
         dataText: theme.palette.text.primary,
       }
     },
