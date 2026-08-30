@@ -7,9 +7,16 @@ import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import Collapse from '@mui/material/Collapse'
+import Dialog from '@mui/material/Dialog'
+import DialogActions from '@mui/material/DialogActions'
+import DialogContent from '@mui/material/DialogContent'
+import DialogTitle from '@mui/material/DialogTitle'
 import Divider from '@mui/material/Divider'
 import Paper from '@mui/material/Paper'
 import Popper from '@mui/material/Popper'
+import List from '@mui/material/List'
+import ListItemButton from '@mui/material/ListItemButton'
+import ListItemText from '@mui/material/ListItemText'
 import Stack from '@mui/material/Stack'
 import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
@@ -606,6 +613,45 @@ function addForeignKeyLinkToSchemas(
   })
 }
 
+function updateForeignKeyReferenceInSchemas(
+  schemas,
+  sourceSchemaName,
+  sourceTableName,
+  sourceColumnName,
+  nextReferences
+) {
+  return schemas.map((schema) => {
+    if (schema.schemaName !== sourceSchemaName) {
+      return schema
+    }
+
+    return {
+      ...schema,
+      tables: schema.tables.map((table) => {
+        if (table.tableName !== sourceTableName) {
+          return table
+        }
+
+        return {
+          ...table,
+          foreignKeys: (table.foreignKeys ?? []).map((foreignKey) =>
+            foreignKey.column === sourceColumnName
+              ? { ...foreignKey, references: nextReferences }
+              : foreignKey
+          ),
+        }
+      }),
+    }
+  })
+}
+
+function tableToCsv(table) {
+  const columns = table.columns ?? []
+  const escapeCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
+  const rows = (table.sampleRows ?? []).map((row) => columns.map((column) => escapeCell(row[column])).join(','))
+  return [columns.map(escapeCell).join(','), ...rows].join('\n')
+}
+
 function normalizeTableEntry(entry, fallbackIndex) {
   if (typeof entry === 'string' || typeof entry === 'number') {
     return {
@@ -781,10 +827,27 @@ function DashboardPage() {
   const [inboundUsagePreview, setInboundUsagePreview] = useState(null)
   const [dragSourceTableKey, setDragSourceTableKey] = useState('')
   const [dropTargetTableKey, setDropTargetTableKey] = useState('')
+  const [historyStack, setHistoryStack] = useState([])
+  const [futureStack, setFutureStack] = useState([])
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
+  const [isGraphVisible, setIsGraphVisible] = useState(true)
+  const [savedViews, setSavedViews] = useState(() => {
+    if (typeof window === 'undefined') {
+      return []
+    }
+
+    try {
+      return JSON.parse(window.localStorage.getItem('tables.savedViews') ?? '[]')
+    } catch {
+      return []
+    }
+  })
+  const [fkDrafts, setFkDrafts] = useState({})
   const hoverCloseTimerRef = useRef(null)
   const inboundUsageCloseTimerRef = useRef(null)
   const [fkHoverPreview, setFkHoverPreview] = useState(null)
   const fkHoverCloseTimerRef = useRef(null)
+  const searchInputRef = useRef(null)
 
   const isTableExpanded = useCallback(
     (schemaName, tableName) => activeTableKey === `${schemaName}.${tableName}`,
@@ -829,6 +892,249 @@ function DashboardPage() {
     setCompareSampleRowTarget(null)
     setNavigationTrail((current) => current.slice(0, index + 1))
   }, [])
+
+  const applySchemaChange = useCallback((updater) => {
+    setSchemas((currentSchemas) => {
+      const nextSchemas = typeof updater === 'function' ? updater(currentSchemas) : updater
+      setHistoryStack((currentHistory) => [...currentHistory, currentSchemas])
+      setFutureStack([])
+      return nextSchemas
+    })
+  }, [])
+
+  const undoLastSchemaChange = useCallback(() => {
+    if (historyStack.length === 0) {
+      return
+    }
+
+    const previousSchemas = historyStack[historyStack.length - 1]
+    setFutureStack((currentFuture) => [schemas, ...currentFuture])
+    setHistoryStack((currentHistory) => currentHistory.slice(0, -1))
+    setSchemas(previousSchemas)
+  }, [historyStack, schemas])
+
+  const redoLastSchemaChange = useCallback(() => {
+    if (futureStack.length === 0) {
+      return
+    }
+
+    const nextSchemas = futureStack[0]
+    setHistoryStack((currentHistory) => [...currentHistory, schemas])
+    setFutureStack((currentFuture) => currentFuture.slice(1))
+    setSchemas(nextSchemas)
+  }, [futureStack, schemas])
+
+  const persistSavedViews = useCallback((nextViews) => {
+    setSavedViews(nextViews)
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('tables.savedViews', JSON.stringify(nextViews))
+    }
+  }, [])
+
+  const saveCurrentView = useCallback(() => {
+    const viewName = window.prompt('Save this view as:')
+    if (!viewName) {
+      return
+    }
+
+    const nextViews = [
+      ...savedViews.filter((view) => view.name !== viewName),
+      {
+        name: viewName,
+        searchQuery,
+        activeTableKey,
+        navigationTrail,
+        savedAt: new Date().toISOString(),
+      },
+    ]
+
+    persistSavedViews(nextViews)
+  }, [activeTableKey, navigationTrail, persistSavedViews, savedViews, searchQuery])
+
+  const loadSavedView = useCallback((view) => {
+    setSearchQuery(view.searchQuery ?? '')
+    setActiveTableKey(view.activeTableKey ?? '')
+    setCompareSampleRowTarget(null)
+    setSelectedSampleRowTarget(null)
+    setNavigationTrail(Array.isArray(view.navigationTrail) ? view.navigationTrail : [])
+  }, [])
+
+  const activeTable = useMemo(() => {
+    if (!activeTableKey) {
+      return null
+    }
+
+    const [schemaName, tableName] = activeTableKey.split('.')
+    const schema = schemas.find((item) => item.schemaName === schemaName)
+    if (!schema) {
+      return null
+    }
+
+    const table = schema.tables.find((item) => item.tableName === tableName)
+    if (!table) {
+      return null
+    }
+
+    const primaryKey = table.primaryKey ?? []
+    const foreignKeys = table.foreignKeys ?? []
+
+    return {
+      schemaName,
+      tableName,
+      columns: table.columns,
+      primaryKey,
+      foreignKeys,
+      sampleRows: table.sampleRows ?? [],
+    }
+  }, [activeTableKey, schemas])
+
+  const selectedRowResolution = useMemo(
+    () => resolveRowTarget(activeTable, selectedSampleRowTarget),
+    [activeTable, selectedSampleRowTarget]
+  )
+
+  const compareRowResolution = useMemo(
+    () => resolveRowTarget(activeTable, compareSampleRowTarget),
+    [activeTable, compareSampleRowTarget]
+  )
+
+  const selectedSampleRowIndex = selectedRowResolution.index
+  const selectedSampleRow = selectedRowResolution.row
+  const compareSampleRowIndex = compareRowResolution.index
+  const compareSampleRow = compareRowResolution.row
+
+  const deleteSavedView = useCallback(
+    (viewName) => {
+      persistSavedViews(savedViews.filter((view) => view.name !== viewName))
+    },
+    [persistSavedViews, savedViews]
+  )
+
+  const copyText = useCallback(async (text) => {
+    await navigator.clipboard.writeText(text)
+  }, [])
+
+  const copySelectedRow = useCallback(() => {
+    if (!activeTable || !selectedSampleRow) {
+      return
+    }
+
+    copyText(JSON.stringify(selectedSampleRow, null, 2))
+  }, [activeTable, copyText, selectedSampleRow])
+
+  const copySelectedCsv = useCallback(() => {
+    if (!activeTable || !selectedSampleRow) {
+      return
+    }
+
+    const csv = tableToCsv({
+      columns: activeTable.columns,
+      sampleRows: [selectedSampleRow],
+    })
+    copyText(csv)
+  }, [activeTable, copyText, selectedSampleRow])
+
+  const copyDiff = useCallback(() => {
+    if (!activeTable || !selectedSampleRow || !compareSampleRow) {
+      return
+    }
+
+    const diff = {}
+    activeTable.columns.forEach((columnName) => {
+      if (String(selectedSampleRow[columnName] ?? '') !== String(compareSampleRow[columnName] ?? '')) {
+        diff[columnName] = {
+          selected: selectedSampleRow[columnName] ?? null,
+          compare: compareSampleRow[columnName] ?? null,
+        }
+      }
+    })
+
+    copyText(JSON.stringify(diff, null, 2))
+  }, [activeTable, compareSampleRow, copyText, selectedSampleRow])
+
+  const downloadTableCsv = useCallback(() => {
+    if (!activeTable) {
+      return
+    }
+
+    const blob = new Blob([tableToCsv(activeTable)], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${activeTable.tableName}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+  }, [activeTable])
+
+  const updateFkDraft = useCallback((tableKey, columnName, value) => {
+    setFkDrafts((current) => ({
+      ...current,
+      [tableKey]: {
+        ...(current[tableKey] ?? {}),
+        [columnName]: value,
+      },
+    }))
+  }, [])
+
+  const saveForeignKeyEdit = useCallback(
+    (schemaName, tableName, columnName) => {
+      const tableKey = createTableKey(schemaName, tableName)
+      const draftValue = fkDrafts[tableKey]?.[columnName]
+      if (!draftValue) {
+        return
+      }
+
+      applySchemaChange((currentSchemas) =>
+        updateForeignKeyReferenceInSchemas(
+          currentSchemas,
+          schemaName,
+          tableName,
+          columnName,
+          draftValue
+        )
+      )
+
+      setFkDrafts((current) => {
+        const next = { ...current }
+        if (next[tableKey]) {
+          next[tableKey] = { ...next[tableKey] }
+          delete next[tableKey][columnName]
+        }
+        return next
+      })
+    },
+    [applySchemaChange, fkDrafts]
+  )
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setIsCommandPaletteOpen(true)
+        return
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        saveCurrentView()
+        return
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        undoLastSchemaChange()
+        return
+      }
+
+      if ((event.ctrlKey && event.key.toLowerCase() === 'y') || (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'z')) {
+        event.preventDefault()
+        redoLastSchemaChange()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [redoLastSchemaChange, saveCurrentView, undoLastSchemaChange])
 
   const clearHoverCloseTimer = useCallback(() => {
     if (hoverCloseTimerRef.current) {
@@ -881,6 +1187,8 @@ function DashboardPage() {
   const handleTableDragStart = useCallback((event, schemaName, tableName) => {
     const tableKey = createTableKey(schemaName, tableName)
     clearHoverCloseTimer()
+    clearInboundUsageCloseTimer()
+    clearFkHoverCloseTimer()
     setHoverAnchorEl(null)
     setHoverTableKey('')
     setFkHoverPreview(null)
@@ -888,7 +1196,7 @@ function DashboardPage() {
     setDragSourceTableKey(tableKey)
     event.dataTransfer.effectAllowed = 'copy'
     event.dataTransfer.setData('application/json', JSON.stringify({ schemaName, tableName }))
-  }, [clearHoverCloseTimer])
+  }, [clearHoverCloseTimer, clearFkHoverCloseTimer, clearInboundUsageCloseTimer])
 
   const handleTableDragEnd = useCallback(() => {
     clearDragState()
@@ -901,7 +1209,7 @@ function DashboardPage() {
       let payload = null
       try {
         payload = JSON.parse(event.dataTransfer.getData('application/json'))
-      } catch (parseError) {
+      } catch {
         payload = null
       }
 
@@ -918,7 +1226,7 @@ function DashboardPage() {
         return
       }
 
-      setSchemas((currentSchemas) =>
+      applySchemaChange((currentSchemas) =>
         addForeignKeyLinkToSchemas(
           currentSchemas,
           sourceSchemaName,
@@ -934,7 +1242,7 @@ function DashboardPage() {
       setNavigationTrail([{ schemaName: sourceSchemaName, tableName: sourceTableName, keyValue: null }])
       clearDragState()
     },
-    [clearDragState]
+    [applySchemaChange, clearDragState]
   )
 
   const handleTableDragOver = useCallback((event, schemaName, tableName) => {
@@ -961,7 +1269,7 @@ function DashboardPage() {
   )
 
   const removeInboundUsageSource = useCallback((sourceSchemaName, sourceTableName, sourceColumnName) => {
-    setSchemas((currentSchemas) => {
+    applySchemaChange((currentSchemas) => {
       const nextSchemas = removeForeignKeyUsageFromSchemas(
         currentSchemas,
         sourceSchemaName,
@@ -986,7 +1294,7 @@ function DashboardPage() {
 
       return nextSchemas
     })
-  }, [])
+  }, [applySchemaChange])
 
   const closeInboundUsagePreview = useCallback(() => {
     clearInboundUsageCloseTimer()
@@ -1122,6 +1430,10 @@ function DashboardPage() {
     try {
       if (tablesMode !== 'api') {
         setSchemas(normalizeTableInventory(mockTableResponse))
+        setHistoryStack([])
+        setFutureStack([])
+        setSelectedSampleRowTarget(null)
+        setCompareSampleRowTarget(null)
         setModeLabel('mock')
         return
       }
@@ -1138,6 +1450,10 @@ function DashboardPage() {
 
       const response = await httpClient.get(tablesEndpoint, { headers })
       setSchemas(normalizeTableInventory(response.data))
+      setHistoryStack([])
+      setFutureStack([])
+      setSelectedSampleRowTarget(null)
+      setCompareSampleRowTarget(null)
       setModeLabel('api')
     } catch (fetchError) {
       console.error('Error loading schema tables:', fetchError)
@@ -1155,6 +1471,10 @@ function DashboardPage() {
         }
       } else {
         setSchemas(normalizeTableInventory(mockTableResponse))
+        setHistoryStack([])
+        setFutureStack([])
+        setSelectedSampleRowTarget(null)
+        setCompareSampleRowTarget(null)
         setModeLabel('mock')
       }
     } finally {
@@ -1180,50 +1500,6 @@ function DashboardPage() {
     () => schemas.reduce((count, schema) => count + schema.tables.length, 0),
     [schemas]
   )
-
-  const activeTable = useMemo(() => {
-    if (!activeTableKey) {
-      return null
-    }
-
-    const [schemaName, tableName] = activeTableKey.split('.')
-    const schema = schemas.find((item) => item.schemaName === schemaName)
-    if (!schema) {
-      return null
-    }
-
-    const table = schema.tables.find((item) => item.tableName === tableName)
-    if (!table) {
-      return null
-    }
-
-    const primaryKey = table.primaryKey ?? []
-    const foreignKeys = table.foreignKeys ?? []
-
-    return {
-      schemaName,
-      tableName,
-      columns: table.columns,
-      primaryKey,
-      foreignKeys,
-      sampleRows: table.sampleRows ?? [],
-    }
-  }, [activeTableKey, schemas])
-
-  const selectedRowResolution = useMemo(
-    () => resolveRowTarget(activeTable, selectedSampleRowTarget),
-    [activeTable, selectedSampleRowTarget]
-  )
-
-  const compareRowResolution = useMemo(
-    () => resolveRowTarget(activeTable, compareSampleRowTarget),
-    [activeTable, compareSampleRowTarget]
-  )
-
-  const selectedSampleRowIndex = selectedRowResolution.index
-  const selectedSampleRow = selectedRowResolution.row
-  const compareSampleRowIndex = compareRowResolution.index
-  const compareSampleRow = compareRowResolution.row
 
   const visibleSchemas = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -1295,6 +1571,28 @@ function DashboardPage() {
     })
 
     return map
+  }, [schemas])
+
+  const relationshipEdges = useMemo(() => {
+    return schemas.flatMap((schema) =>
+      schema.tables.flatMap((table) =>
+        (table.foreignKeys ?? []).map((foreignKey) => {
+          const resolvedTable = resolveReferencedTableLocation(
+            schemas,
+            schema.schemaName,
+            foreignKey.references
+          )
+
+          return {
+            sourceSchemaName: schema.schemaName,
+            sourceTableName: table.tableName,
+            sourceColumnName: foreignKey.column,
+            targetSchemaName: resolvedTable?.schemaName ?? '',
+            targetTableName: resolvedTable?.table.tableName ?? '',
+          }
+        })
+      )
+    )
   }, [schemas])
 
   return (
@@ -1403,12 +1701,21 @@ function DashboardPage() {
                   Drag one table chip onto another to create a new FK link from the source table to
                   the target table. Starting a drag closes the hover popups first.
                 </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Use Undo/Redo for FK changes, Saved views to restore a search/path setup, and the
+                  Relationship graph to scan links at a glance.
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Use Copy row / Copy CSV / Copy diff / Download CSV to export what you are viewing,
+                  and Ctrl+K to open the command palette.
+                </Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Chip label="Enter / Space: open table or follow FK" size="small" variant="outlined" />
                   <Chip label="Arrow keys: move between chips or rows" size="small" variant="outlined" />
                   <Chip label="Esc: close FK preview" size="small" variant="outlined" />
                   <Chip label="Shift-click: compare rows" size="small" variant="outlined" />
                   <Chip label="Delete inbound chip: remove FK link" size="small" variant="outlined" />
+                  <Chip label="Ctrl+K: open command palette" size="small" variant="outlined" />
                 </Stack>
               </Stack>
             </SectionCard>
@@ -1426,6 +1733,7 @@ function DashboardPage() {
                     label="Search tables, columns, FK values"
                     placeholder="customers, category_id, 101, orders..."
                     value={searchQuery}
+                    inputRef={searchInputRef}
                     onChange={(event) => setSearchQuery(event.target.value)}
                   />
                   <Button
@@ -1446,6 +1754,95 @@ function DashboardPage() {
                 </Stack>
               </Stack>
             </Paper>
+
+            <Paper sx={{ p: 2 }}>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                <Button variant="outlined" onClick={undoLastSchemaChange} disabled={!historyStack.length}>
+                  Undo
+                </Button>
+                <Button variant="outlined" onClick={redoLastSchemaChange} disabled={!futureStack.length}>
+                  Redo
+                </Button>
+                <Button variant="outlined" onClick={saveCurrentView}>
+                  Save view
+                </Button>
+                <Button variant="outlined" onClick={() => setIsGraphVisible((current) => !current)}>
+                  {isGraphVisible ? 'Hide graph' : 'Show graph'}
+                </Button>
+                <Button variant="outlined" onClick={() => setIsCommandPaletteOpen(true)}>
+                  Command palette
+                </Button>
+              </Stack>
+            </Paper>
+
+            <SectionCard title="Saved views">
+              {savedViews.length > 0 ? (
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {savedViews.map((view) => (
+                    <Chip
+                      key={view.name}
+                      label={view.name}
+                      variant="outlined"
+                      clickable
+                      onClick={() => loadSavedView(view)}
+                      onDelete={() => deleteSavedView(view.name)}
+                    />
+                  ))}
+                </Stack>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  No saved views yet.
+                </Typography>
+              )}
+            </SectionCard>
+
+            {isGraphVisible ? (
+              <SectionCard title="Relationship graph">
+                {relationshipEdges.length > 0 ? (
+                  <Stack spacing={1}>
+                    {relationshipEdges.map((edge) => (
+                      <Stack
+                        key={`${edge.sourceSchemaName}.${edge.sourceTableName}.${edge.sourceColumnName}`}
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        flexWrap="wrap"
+                        useFlexGap
+                      >
+                        <Chip
+                          label={edge.sourceTableName}
+                          color="primary"
+                          variant="outlined"
+                          clickable
+                          onClick={() => navigateToTable(edge.sourceSchemaName, edge.sourceTableName)}
+                        />
+                        <Chip
+                          label={`via ${edge.sourceColumnName}`}
+                          size="small"
+                          variant="outlined"
+                          color="info"
+                        />
+                        <Chip
+                          label={edge.targetTableName || 'unresolved'}
+                          color="secondary"
+                          variant="filled"
+                          clickable={Boolean(edge.targetTableName)}
+                          onClick={
+                            edge.targetTableName
+                              ? () => navigateToTable(edge.targetSchemaName, edge.targetTableName)
+                              : undefined
+                          }
+                        />
+                      </Stack>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    No relationships yet.
+                  </Typography>
+                )}
+              </SectionCard>
+            ) : null}
 
             {visibleSchemas.length > 0 ? (
               visibleSchemas.map((schema) => (
@@ -1961,10 +2358,88 @@ function DashboardPage() {
                                   )}
                                 </Stack>
 
+                                {(activeTable.foreignKeys ?? []).length > 0 ? (
+                                  <Box sx={{ pt: 1 }}>
+                                    <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                                      FK editor
+                                    </Typography>
+                                    <Stack spacing={1} sx={{ mt: 0.75 }}>
+                                      {activeTable.foreignKeys.map((foreignKey) => {
+                                        const tableKey = createTableKey(
+                                          activeTable.schemaName,
+                                          activeTable.tableName
+                                        )
+                                        const draftValue =
+                                          fkDrafts[tableKey]?.[foreignKey.column] ??
+                                          foreignKey.references
+
+                                        return (
+                                          <Stack
+                                            key={`${tableKey}-${foreignKey.column}`}
+                                            direction={{ xs: 'column', sm: 'row' }}
+                                            spacing={1}
+                                            alignItems={{ xs: 'stretch', sm: 'center' }}
+                                          >
+                                            <Chip
+                                              label={foreignKey.column}
+                                              size="small"
+                                              color="info"
+                                              variant="outlined"
+                                            />
+                                            <TextField
+                                              size="small"
+                                              fullWidth
+                                              value={draftValue}
+                                              onChange={(event) =>
+                                                updateFkDraft(
+                                                  tableKey,
+                                                  foreignKey.column,
+                                                  event.target.value
+                                                )
+                                              }
+                                            />
+                                            <Button
+                                              variant="outlined"
+                                              size="small"
+                                              onClick={() =>
+                                                saveForeignKeyEdit(
+                                                  activeTable.schemaName,
+                                                  activeTable.tableName,
+                                                  foreignKey.column
+                                                )
+                                              }
+                                            >
+                                              Save
+                                            </Button>
+                                          </Stack>
+                                        )
+                                      })}
+                                    </Stack>
+                                  </Box>
+                                ) : null}
+
                                 <Box sx={{ pt: 1.5 }}>
-                                  <Typography variant="caption" color="text.secondary" fontWeight={700}>
-                                    Sample data
-                                  </Typography>
+                                  <Stack
+                                    direction={{ xs: 'column', sm: 'row' }}
+                                    spacing={1}
+                                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                    justifyContent="space-between"
+                                  >
+                                    <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                                      Sample data
+                                    </Typography>
+                                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                      <Button variant="outlined" size="small" onClick={copySelectedRow} disabled={!selectedSampleRow}>
+                                        Copy row
+                                      </Button>
+                                      <Button variant="outlined" size="small" onClick={copySelectedCsv} disabled={!selectedSampleRow}>
+                                        Copy CSV
+                                      </Button>
+                                      <Button variant="outlined" size="small" onClick={downloadTableCsv}>
+                                        Download CSV
+                                      </Button>
+                                    </Stack>
+                                  </Stack>
                                   <TableContainer
                                     component={Paper}
                                     variant="outlined"
@@ -2236,16 +2711,26 @@ function DashboardPage() {
 
                                 {selectedSampleRow && compareSampleRow ? (
                                   <Box sx={{ pt: 1.25 }}>
-                                    <Stack direction="row" spacing={1} alignItems="center">
+                                    <Stack
+                                      direction={{ xs: 'column', sm: 'row' }}
+                                      spacing={1}
+                                      alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                      justifyContent="space-between"
+                                    >
                                       <Typography variant="caption" color="text.secondary" fontWeight={700}>
                                         Row diff
                                       </Typography>
-                                      <Chip
-                                        label="Selected vs Compare"
-                                        size="small"
-                                        color="secondary"
-                                        variant="outlined"
-                                      />
+                                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                        <Chip
+                                          label="Selected vs Compare"
+                                          size="small"
+                                          color="secondary"
+                                          variant="outlined"
+                                        />
+                                        <Button variant="outlined" size="small" onClick={copyDiff}>
+                                          Copy diff
+                                        </Button>
+                                      </Stack>
                                     </Stack>
                                     <Typography
                                       variant="caption"
@@ -2342,6 +2827,75 @@ function DashboardPage() {
           </SectionCard>
         )}
       </Stack>
+
+      <Dialog open={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Command palette</DialogTitle>
+        <DialogContent dividers>
+          <List dense>
+            <ListItemButton
+              onClick={() => {
+                searchInputRef.current?.focus()
+                setIsCommandPaletteOpen(false)
+              }}
+            >
+              <ListItemText primary="Focus search" secondary="Ctrl+K" />
+            </ListItemButton>
+            <ListItemButton
+              onClick={() => {
+                setIsGraphVisible((current) => !current)
+                setIsCommandPaletteOpen(false)
+              }}
+            >
+              <ListItemText primary="Toggle relationship graph" />
+            </ListItemButton>
+            <ListItemButton
+              onClick={() => {
+                saveCurrentView()
+                setIsCommandPaletteOpen(false)
+              }}
+            >
+              <ListItemText primary="Save current view" secondary="Ctrl+S" />
+            </ListItemButton>
+            <ListItemButton
+              onClick={() => {
+                undoLastSchemaChange()
+                setIsCommandPaletteOpen(false)
+              }}
+            >
+              <ListItemText primary="Undo last FK change" secondary="Ctrl+Z" />
+            </ListItemButton>
+            <ListItemButton
+              onClick={() => {
+                redoLastSchemaChange()
+                setIsCommandPaletteOpen(false)
+              }}
+            >
+              <ListItemText primary="Redo last FK change" secondary="Ctrl+Y" />
+            </ListItemButton>
+            <ListItemButton
+              onClick={() => {
+                copySelectedRow()
+                setIsCommandPaletteOpen(false)
+              }}
+              disabled={!selectedSampleRow}
+            >
+              <ListItemText primary="Copy selected row" />
+            </ListItemButton>
+            <ListItemButton
+              onClick={() => {
+                downloadTableCsv()
+                setIsCommandPaletteOpen(false)
+              }}
+              disabled={!activeTable}
+            >
+              <ListItemText primary="Download current table as CSV" />
+            </ListItemButton>
+          </List>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIsCommandPaletteOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </PageContainer>
   )
 }
