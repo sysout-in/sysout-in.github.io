@@ -12,8 +12,12 @@ import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import DialogTitle from '@mui/material/DialogTitle'
 import Divider from '@mui/material/Divider'
+import FormControl from '@mui/material/FormControl'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import Paper from '@mui/material/Paper'
 import Popper from '@mui/material/Popper'
+import Radio from '@mui/material/Radio'
+import RadioGroup from '@mui/material/RadioGroup'
 import List from '@mui/material/List'
 import ListItemButton from '@mui/material/ListItemButton'
 import ListItemText from '@mui/material/ListItemText'
@@ -315,23 +319,20 @@ function createTableKey(schemaName, tableName) {
   return `${schemaName}.${tableName}`
 }
 
-const DIAGRAM_NODE_WIDTH = 240
-const DIAGRAM_HEADER_HEIGHT = 56
-const DIAGRAM_ROW_HEIGHT = 26
-const DIAGRAM_NODE_PADDING = 14
-const DIAGRAM_LAYER_GAP = 90
-const DIAGRAM_COLUMN_GAP = 80
+const DIAGRAM_NODE_WIDTH = 210
+const DIAGRAM_HEADER_HEIGHT = 46
+const DIAGRAM_ROW_HEIGHT = 22
+const DIAGRAM_NODE_PADDING = 10
+const DIAGRAM_LAYER_GAP = 56
+const DIAGRAM_COLUMN_GAP = 44
 
-function getDiagramNodeSize(node) {
-  const fieldCount =
-    (node.table.primaryKey?.length ?? 0) +
-    (node.table.foreignKeys?.length ?? 0) +
-    Math.max(
-      0,
-      (node.table.columns?.length ?? 0) -
-        (node.table.primaryKey?.length ?? 0) -
-        (node.table.foreignKeys?.length ?? 0)
-    )
+function getDiagramNodeSize(node, compactMode = true) {
+  const keyFieldCount = (node.table.primaryKey?.length ?? 0) + (node.table.foreignKeys?.length ?? 0)
+  const extraFieldCount = Math.max(
+    0,
+    (node.table.columns?.length ?? 0) - keyFieldCount
+  )
+  const fieldCount = compactMode ? keyFieldCount : keyFieldCount + extraFieldCount
 
   return {
     width: DIAGRAM_NODE_WIDTH,
@@ -339,7 +340,7 @@ function getDiagramNodeSize(node) {
   }
 }
 
-function buildDiagramInitialPositions(graph) {
+function buildDiagramInitialPositions(graph, compactMode = true) {
   const positions = {}
   const layerByKey = new Map()
 
@@ -392,7 +393,7 @@ function buildDiagramInitialPositions(graph) {
           return left.schemaName.localeCompare(right.schemaName)
         })
         .forEach((node, index) => {
-          const size = getDiagramNodeSize(node)
+          const size = getDiagramNodeSize(node, compactMode)
           const x = 48 + index * (size.width + DIAGRAM_COLUMN_GAP)
           const y = 36 + layer * (size.height + DIAGRAM_LAYER_GAP)
           positions[node.key] = { x, y }
@@ -975,6 +976,7 @@ function DashboardPage() {
   const [futureStack, setFutureStack] = useState([])
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
   const [isGraphVisible, setIsGraphVisible] = useState(true)
+  const [diagramFieldMode, setDiagramFieldMode] = useState('compact')
   const [savedViews, setSavedViews] = useState(() => {
     if (typeof window === 'undefined') {
       return []
@@ -1828,8 +1830,8 @@ function DashboardPage() {
   }, [schemas])
 
   const diagramLayout = useMemo(
-    () => buildDiagramInitialPositions(relationshipGraph),
-    [relationshipGraph]
+    () => buildDiagramInitialPositions(relationshipGraph, diagramFieldMode === 'compact'),
+    [diagramFieldMode, relationshipGraph]
   )
 
   useEffect(() => {
@@ -1913,13 +1915,15 @@ function DashboardPage() {
     [diagramPositions, relationshipGraph.nodes]
   )
 
+  const compactDiagramMode = diagramFieldMode === 'compact'
+
   const diagramBoardMetrics = useMemo(() => {
     let width = diagramLayout.width
     let height = diagramLayout.height
 
     relationshipGraph.nodes.forEach((node, key) => {
       const position = diagramPositions[key] ?? diagramLayout.positions[key]
-      const size = getDiagramNodeSize(node)
+      const size = getDiagramNodeSize(node, compactDiagramMode)
       if (position) {
         width = Math.max(width, position.x + size.width + 96)
         height = Math.max(height, position.y + size.height + 96)
@@ -1927,7 +1931,7 @@ function DashboardPage() {
     })
 
     return { width, height }
-  }, [diagramLayout, diagramPositions, relationshipGraph])
+  }, [compactDiagramMode, diagramLayout, diagramPositions, relationshipGraph])
 
   const renderRelationshipBranch = (node, depth = 0, ancestry = new Set()) => {
     const nextAncestry = new Set(ancestry)
@@ -2321,6 +2325,24 @@ function DashboardPage() {
                       <Chip label="1 = referenced row" size="small" variant="outlined" />
                       <Chip label="0..* = child rows" size="small" variant="outlined" />
                       <Chip label="Drag cards by the header" size="small" variant="outlined" />
+                      <FormControl size="small" sx={{ ml: 0.5 }}>
+                        <RadioGroup
+                          row
+                          value={diagramFieldMode}
+                          onChange={(event) => setDiagramFieldMode(event.target.value)}
+                        >
+                          <FormControlLabel
+                            value="compact"
+                            control={<Radio size="small" />}
+                            label="Compact"
+                          />
+                          <FormControlLabel
+                            value="expanded"
+                            control={<Radio size="small" />}
+                            label="Expanded"
+                          />
+                        </RadioGroup>
+                      </FormControl>
                     </Stack>
 
                     <Box
@@ -2337,7 +2359,7 @@ function DashboardPage() {
                             : alpha(theme.palette.info.light, 0.12),
                         backgroundImage:
                           'linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.2) 1px, transparent 1px)',
-                        backgroundSize: '40px 40px',
+                        backgroundSize: '32px 32px',
                       }}
                     >
                       <Box sx={{ position: 'relative', width: diagramBoardMetrics.width, height: diagramBoardMetrics.height }}>
@@ -2380,8 +2402,8 @@ function DashboardPage() {
                                 return null
                               }
 
-                              const sourceSize = getDiagramNodeSize(sourceNode)
-                              const targetSize = getDiagramNodeSize(targetNode)
+                              const sourceSize = getDiagramNodeSize(sourceNode, compactDiagramMode)
+                              const targetSize = getDiagramNodeSize(targetNode, compactDiagramMode)
                               const connector = buildDiagramConnector(
                                 sourcePosition,
                                 sourceSize,
@@ -2432,7 +2454,7 @@ function DashboardPage() {
 
                         {Array.from(relationshipGraph.nodes.values()).map((node) => {
                           const position = diagramPositions[node.key] ?? diagramLayout.positions[node.key]
-                          const size = getDiagramNodeSize(node)
+                          const size = getDiagramNodeSize(node, compactDiagramMode)
                           if (!position) {
                             return null
                           }
@@ -2447,19 +2469,27 @@ function DashboardPage() {
                               columnName: foreignKey.column,
                               kind: 'FK',
                             })) ?? []),
-                            ...node.table.columns
-                              .filter((columnName) => !(node.table.primaryKey ?? []).includes(columnName))
-                              .filter(
-                                (columnName) =>
-                                  !(node.table.foreignKeys ?? []).some(
-                                    (foreignKey) => foreignKey.column === columnName
+                            ...(compactDiagramMode
+                              ? []
+                              : node.table.columns
+                                  .filter(
+                                    (columnName) => !(node.table.primaryKey ?? []).includes(columnName)
                                   )
-                              )
-                              .map((columnName) => ({
-                                columnName,
-                                kind: 'ATTR',
-                              })),
+                                  .filter(
+                                    (columnName) =>
+                                      !(node.table.foreignKeys ?? []).some(
+                                        (foreignKey) => foreignKey.column === columnName
+                                      )
+                                  )
+                                  .map((columnName) => ({
+                                    columnName,
+                                    kind: 'ATTR',
+                                  }))),
                           ]
+                          const hiddenFieldCount = Math.max(
+                            0,
+                            node.table.columns.length - fields.length
+                          )
 
                           return (
                             <Paper
@@ -2486,8 +2516,8 @@ function DashboardPage() {
                             >
                               <Box
                                 sx={{
-                                  px: 1.5,
-                                  py: 1,
+                                  px: 1,
+                                  py: 0.75,
                                   textAlign: 'center',
                                   backgroundColor: alpha(theme.palette.info.main, 0.08),
                                   borderBottom: `1px solid ${alpha(theme.palette.primary.dark, 0.9)}`,
@@ -2501,26 +2531,36 @@ function DashboardPage() {
                                   {node.schemaName}.{node.tableName}
                                 </Typography>
                               </Box>
-                              <Box sx={{ px: 1.25, py: 1 }}>
+                              <Box sx={{ px: 1, py: 0.75 }}>
                                 {fields.map((field) => (
                                   <Typography
                                     key={`${node.key}-${field.kind}-${field.columnName}`}
                                     variant="body2"
                                     sx={{
                                       fontFamily: 'monospace',
+                                      fontSize: '0.86rem',
                                       color:
                                         field.kind === 'PK'
                                           ? theme.palette.warning.main
                                           : field.kind === 'FK'
                                             ? theme.palette.info.main
                                             : 'text.primary',
-                                      lineHeight: 1.3,
+                                      lineHeight: 1.15,
                                     }}
                                   >
                                     {field.columnName}
                                     {field.kind === 'PK' ? ' (PK)' : field.kind === 'FK' ? ' (FK)' : ''}
                                   </Typography>
                                 ))}
+                                {compactDiagramMode && hiddenFieldCount > 0 ? (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{ display: 'block', mt: 0.5, fontSize: '0.72rem' }}
+                                  >
+                                    +{hiddenFieldCount} hidden
+                                  </Typography>
+                                ) : null}
                               </Box>
                             </Paper>
                           )
