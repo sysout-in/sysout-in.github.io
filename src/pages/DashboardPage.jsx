@@ -325,6 +325,8 @@ const DIAGRAM_ROW_HEIGHT = 22
 const DIAGRAM_NODE_PADDING = 10
 const DIAGRAM_LAYER_GAP = 56
 const DIAGRAM_COLUMN_GAP = 44
+const DIAGRAM_COMPONENT_GAP = 64
+const DIAGRAM_CANVAS_MARGIN = 32
 
 function getDiagramNodeSize(node, compactMode = true) {
   const keyFieldCount = (node.table.primaryKey?.length ?? 0) + (node.table.foreignKeys?.length ?? 0)
@@ -342,67 +344,262 @@ function getDiagramNodeSize(node, compactMode = true) {
 
 function buildDiagramInitialPositions(graph, compactMode = true) {
   const positions = {}
-  const layerByKey = new Map()
+  const sizes = new Map()
+  const parents = new Map()
+  const children = new Map()
+  const adjacency = new Map()
 
-  const visit = (node, layer, ancestry = new Set()) => {
-    if (!node || ancestry.has(node.key)) {
+  graph.nodes.forEach((node, key) => {
+    sizes.set(key, getDiagramNodeSize(node, compactMode))
+    parents.set(key, [])
+    children.set(key, [])
+    adjacency.set(key, new Set())
+  })
+
+  graph.nodes.forEach((node) => {
+    node.childLinks.forEach((link) => {
+      if (!graph.nodes.has(link.sourceKey)) {
+        return
+      }
+
+      children.get(node.key).push(link.sourceKey)
+      parents.get(link.sourceKey).push(node.key)
+      adjacency.get(node.key).add(link.sourceKey)
+      adjacency.get(link.sourceKey).add(node.key)
+    })
+  })
+
+  const components = []
+  const visited = new Set()
+
+  graph.nodes.forEach((node, key) => {
+    if (visited.has(key)) {
       return
     }
 
-    const currentLayer = layerByKey.get(node.key)
-    if (currentLayer === undefined || layer > currentLayer) {
-      layerByKey.set(node.key, layer)
+    const stack = [key]
+    const componentKeys = []
+
+    while (stack.length > 0) {
+      const currentKey = stack.pop()
+      if (visited.has(currentKey)) {
+        continue
+      }
+
+      visited.add(currentKey)
+      componentKeys.push(currentKey)
+      adjacency.get(currentKey)?.forEach((nextKey) => {
+        if (!visited.has(nextKey)) {
+          stack.push(nextKey)
+        }
+      })
     }
 
-    const nextAncestry = new Set(ancestry)
-    nextAncestry.add(node.key)
-    node.childLinks.forEach((link) => {
-      visit(graph.nodes.get(link.sourceKey), layer + 1, nextAncestry)
-    })
+    components.push(componentKeys)
+  })
+
+  const compareNodeKeys = (leftKey, rightKey) => {
+    const left = graph.nodes.get(leftKey)
+    const right = graph.nodes.get(rightKey)
+    if (!left || !right) {
+      return leftKey.localeCompare(rightKey)
+    }
+
+    if (left.schemaName === right.schemaName) {
+      return left.tableName.localeCompare(right.tableName)
+    }
+
+    return left.schemaName.localeCompare(right.schemaName)
   }
 
-  graph.roots.forEach((node) => visit(node, 0))
-  graph.leftovers.forEach((node) => {
-    if (!layerByKey.has(node.key)) {
-      layerByKey.set(node.key, 0)
+  const componentLayouts = components.map((componentKeys) => {
+    const componentSet = new Set(componentKeys)
+    const layerByKey = new Map()
+    const inComponent = (key) => componentSet.has(key)
+
+    const componentParents = (key) => (parents.get(key) ?? []).filter(inComponent)
+    const componentChildren = (key) => (children.get(key) ?? []).filter(inComponent)
+
+    const roots = componentKeys
+      .filter((key) => componentParents(key).length === 0)
+      .sort(compareNodeKeys)
+
+    const seedKey =
+      roots[0] ??
+      componentKeys
+        .slice()
+        .sort((leftKey, rightKey) => {
+          const leftScore = componentParents(leftKey).length + componentChildren(leftKey).length
+          const rightScore = componentParents(rightKey).length + componentChildren(rightKey).length
+          if (leftScore === rightScore) {
+            return compareNodeKeys(leftKey, rightKey)
+          }
+          return rightScore - leftScore
+        })[0]
+
+    if (seedKey) {
+      layerByKey.set(seedKey, 0)
+      const queue = [seedKey]
+
+      while (queue.length > 0) {
+        const currentKey = queue.shift()
+        const currentLayer = layerByKey.get(currentKey) ?? 0
+        componentChildren(currentKey).forEach((nextKey) => {
+          const nextLayer = currentLayer + 1
+          if (layerByKey.get(nextKey) === undefined || nextLayer > layerByKey.get(nextKey)) {
+            layerByKey.set(nextKey, nextLayer)
+            queue.push(nextKey)
+          }
+        })
+      }
+    }
+
+    componentKeys.forEach((key) => {
+      if (layerByKey.has(key)) {
+        return
+      }
+
+      const parentLayers = componentParents(key)
+        .map((parentKey) => layerByKey.get(parentKey))
+        .filter((value) => value !== undefined)
+      layerByKey.set(key, parentLayers.length > 0 ? Math.max(...parentLayers) + 1 : 0)
+    })
+
+    const layers = new Map()
+    componentKeys.forEach((key) => {
+      const layer = layerByKey.get(key) ?? 0
+      if (!layers.has(layer)) {
+        layers.set(layer, [])
+      }
+      layers.get(layer).push(key)
+    })
+
+    const orderByKey = new Map(componentKeys.map((key, index) => [key, index]))
+    const barycenter = (nodeKey, useParents = true) => {
+      const linkedKeys = useParents ? componentParents(nodeKey) : componentChildren(nodeKey)
+      if (linkedKeys.length === 0) {
+        return orderByKey.get(nodeKey) ?? 0
+      }
+      return (
+        linkedKeys.reduce((sum, linkedKey) => sum + (orderByKey.get(linkedKey) ?? 0), 0) /
+        linkedKeys.length
+      )
+    }
+
+    for (let pass = 0; pass < 3; pass += 1) {
+      Array.from(layers.keys())
+        .sort((left, right) => left - right)
+        .forEach((layer) => {
+          layers.get(layer).sort((leftKey, rightKey) => {
+            const leftCenter = barycenter(leftKey, pass % 2 === 0)
+            const rightCenter = barycenter(rightKey, pass % 2 === 0)
+            if (leftCenter === rightCenter) {
+              return compareNodeKeys(leftKey, rightKey)
+            }
+            return leftCenter - rightCenter
+          })
+
+          layers.get(layer).forEach((key, index) => {
+            orderByKey.set(key, index)
+          })
+        })
+    }
+
+    let localWidth = 0
+    let localHeight = 0
+    let cursorY = 0
+    const localPositions = {}
+
+    Array.from(layers.keys())
+      .sort((left, right) => left - right)
+      .forEach((layer, layerIndex, layerArray) => {
+        const layerKeys = layers.get(layer)
+        const layerNodes = layerKeys.map((key) => graph.nodes.get(key)).filter(Boolean)
+        const layerHeight = Math.max(...layerNodes.map((node) => sizes.get(node.key)?.height ?? 0))
+        const layerWidth =
+          layerNodes.reduce(
+            (sum, node, index) => sum + (sizes.get(node.key)?.width ?? 0) + (index === 0 ? 0 : DIAGRAM_COLUMN_GAP),
+            0
+          ) || 0
+        let cursorX = 0
+
+        layerKeys.forEach((key) => {
+          const size = sizes.get(key)
+          if (!size) {
+            return
+          }
+
+          const nodeY = cursorY + (layerHeight - size.height) / 2
+          localPositions[key] = { x: cursorX, y: nodeY }
+          cursorX += size.width + DIAGRAM_COLUMN_GAP
+        })
+
+        localWidth = Math.max(localWidth, layerWidth)
+        localHeight = Math.max(localHeight, cursorY + layerHeight)
+        if (layerIndex < layerArray.length - 1) {
+          cursorY += layerHeight + DIAGRAM_LAYER_GAP
+        }
+      })
+
+    return {
+      componentKeys,
+      localPositions,
+      width: localWidth,
+      height: localHeight,
     }
   })
 
-  const layers = new Map()
-  Array.from(graph.nodes.values()).forEach((node) => {
-    const layer = layerByKey.get(node.key) ?? 0
-    if (!layers.has(layer)) {
-      layers.set(layer, [])
-    }
-    layers.get(layer).push(node)
-  })
+  let cursorX = DIAGRAM_CANVAS_MARGIN
+  let cursorY = DIAGRAM_CANVAS_MARGIN
+  let rowHeight = 0
+  let packedHeight = DIAGRAM_CANVAS_MARGIN
+  const preferredRowWidth = Math.max(
+    1100,
+    Math.min(2200, Math.ceil(Math.sqrt(componentLayouts.length * 60000)))
+  )
+
+  componentLayouts
+    .slice()
+    .sort((left, right) => right.width - left.width || right.height - left.height)
+    .forEach((component) => {
+      if (cursorX > DIAGRAM_CANVAS_MARGIN && cursorX + component.width > preferredRowWidth) {
+        packedHeight = Math.max(packedHeight, cursorY + rowHeight)
+        cursorX = DIAGRAM_CANVAS_MARGIN
+        cursorY += rowHeight + DIAGRAM_COMPONENT_GAP
+        rowHeight = 0
+      }
+
+      component.componentKeys.forEach((key) => {
+        const localPosition = component.localPositions[key]
+        if (!localPosition) {
+          return
+        }
+
+        positions[key] = {
+          x: cursorX + localPosition.x,
+          y: cursorY + localPosition.y,
+        }
+      })
+      cursorX += component.width + DIAGRAM_COMPONENT_GAP
+      rowHeight = Math.max(rowHeight, component.height)
+      rowHeight = Math.max(rowHeight, component.height)
+    })
 
   let maxX = 0
   let maxY = 0
+  graph.nodes.forEach((node, key) => {
+    const position = positions[key] ?? { x: DIAGRAM_CANVAS_MARGIN, y: DIAGRAM_CANVAS_MARGIN }
+    const size = sizes.get(key) ?? getDiagramNodeSize(node, compactMode)
+    maxX = Math.max(maxX, position.x + size.width)
+    maxY = Math.max(maxY, position.y + size.height)
+  })
+  packedHeight = Math.max(packedHeight, cursorY + rowHeight, maxY)
 
-  Array.from(layers.entries())
-    .sort(([left], [right]) => left - right)
-    .forEach(([layer, nodes]) => {
-      nodes
-        .slice()
-        .sort((left, right) => {
-          if (left.schemaName === right.schemaName) {
-            return left.tableName.localeCompare(right.tableName)
-          }
-
-          return left.schemaName.localeCompare(right.schemaName)
-        })
-        .forEach((node, index) => {
-          const size = getDiagramNodeSize(node, compactMode)
-          const x = 48 + index * (size.width + DIAGRAM_COLUMN_GAP)
-          const y = 36 + layer * (size.height + DIAGRAM_LAYER_GAP)
-          positions[node.key] = { x, y }
-          maxX = Math.max(maxX, x + size.width)
-          maxY = Math.max(maxY, y + size.height)
-        })
-    })
-
-  return { positions, width: maxX + 96, height: maxY + 96 }
+  return {
+    positions,
+    width: maxX + DIAGRAM_CANVAS_MARGIN,
+    height: packedHeight + DIAGRAM_CANVAS_MARGIN,
+  }
 }
 
 function getDiagramAnchorRect(position, size, side) {
@@ -422,7 +619,7 @@ function getDiagramAnchorRect(position, size, side) {
   }
 }
 
-function buildDiagramConnector(sourcePosition, sourceSize, targetPosition, targetSize) {
+function buildDiagramConnector(sourcePosition, sourceSize, targetPosition, targetSize, laneOffset = 0) {
   const sourceCenter = {
     x: sourcePosition.x + sourceSize.width / 2,
     y: sourcePosition.y + sourceSize.height / 2,
@@ -442,22 +639,26 @@ function buildDiagramConnector(sourcePosition, sourceSize, targetPosition, targe
 
   const midX = horizontal ? (start.x + end.x) / 2 : start.x
   const midY = horizontal ? start.y : (start.y + end.y) / 2
+  const shiftedStart = horizontal ? { x: start.x, y: start.y + laneOffset } : { x: start.x + laneOffset, y: start.y }
+  const shiftedEnd = horizontal ? { x: end.x, y: end.y + laneOffset } : { x: end.x + laneOffset, y: end.y }
+  const shiftedMidX = horizontal ? midX : midX + laneOffset
+  const shiftedMidY = horizontal ? midY + laneOffset : midY
 
   const points = horizontal
     ? [
-        [start.x, start.y],
-        [midX, start.y],
-        [midX, end.y],
-        [end.x, end.y],
+        [shiftedStart.x, shiftedStart.y],
+        [shiftedMidX, shiftedStart.y],
+        [shiftedMidX, shiftedEnd.y],
+        [shiftedEnd.x, shiftedEnd.y],
       ]
     : [
-        [start.x, start.y],
-        [start.x, midY],
-        [end.x, midY],
-        [end.x, end.y],
+        [shiftedStart.x, shiftedStart.y],
+        [shiftedStart.x, shiftedMidY],
+        [shiftedEnd.x, shiftedMidY],
+        [shiftedEnd.x, shiftedEnd.y],
       ]
 
-  return { start, end, points }
+  return { start: shiftedStart, end: shiftedEnd, points }
 }
 
 function createVirtualAnchor(element) {
@@ -1829,6 +2030,33 @@ function DashboardPage() {
     }
   }, [schemas])
 
+  const diagramLinkLaneMap = useMemo(() => {
+    const map = new Map()
+
+    relationshipGraph.nodes.forEach((node) => {
+      const grouped = new Map()
+
+      node.childLinks.forEach((link) => {
+        const pairKey = `${link.sourceKey}:${link.targetKey}`
+        if (!grouped.has(pairKey)) {
+          grouped.set(pairKey, [])
+        }
+        grouped.get(pairKey).push(link)
+      })
+
+      grouped.forEach((links) => {
+        links.forEach((link, index) => {
+          map.set(`${link.sourceKey}:${link.targetKey}:${link.sourceColumnName}`, {
+            index,
+            count: links.length,
+          })
+        })
+      })
+    })
+
+    return map
+  }, [relationshipGraph])
+
   const diagramLayout = useMemo(
     () => buildDiagramInitialPositions(relationshipGraph, diagramFieldMode === 'compact'),
     [diagramFieldMode, relationshipGraph]
@@ -2392,6 +2620,9 @@ function DashboardPage() {
                             node.childLinks.map((link) => {
                               const sourceNode = relationshipGraph.nodes.get(link.sourceKey)
                               const targetNode = relationshipGraph.nodes.get(link.targetKey)
+                              const lane = diagramLinkLaneMap.get(
+                                `${link.sourceKey}:${link.targetKey}:${link.sourceColumnName}`
+                              ) ?? { index: 0, count: 1 }
                               const sourcePosition =
                                 diagramPositions[link.sourceKey] ??
                                 diagramLayout.positions[link.sourceKey]
@@ -2404,21 +2635,30 @@ function DashboardPage() {
 
                               const sourceSize = getDiagramNodeSize(sourceNode, compactDiagramMode)
                               const targetSize = getDiagramNodeSize(targetNode, compactDiagramMode)
+                              const laneOffset = (lane.index - (lane.count - 1) / 2) * 12
                               const connector = buildDiagramConnector(
                                 sourcePosition,
                                 sourceSize,
                                 targetPosition,
-                                targetSize
+                                targetSize,
+                                laneOffset
                               )
                               const pathD = connector.points
                                 .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point[0]} ${point[1]}`)
                                 .join(' ')
                               const labelX = (connector.start.x + connector.end.x) / 2
                               const labelY = (connector.start.y + connector.end.y) / 2
-                              const startLabelX = connector.points[0][0] + (connector.start.x < connector.end.x ? 12 : -12)
-                              const startLabelY = connector.points[0][1] - 6
-                              const endLabelX = connector.points[connector.points.length - 1][0] + (connector.start.x < connector.end.x ? -12 : 12)
-                              const endLabelY = connector.points[connector.points.length - 1][1] - 6
+                              const isHorizontal = Math.abs(
+                                connector.end.x - connector.start.x
+                              ) >= Math.abs(connector.end.y - connector.start.y)
+                              const startLabelX = connector.points[0][0] + (isHorizontal ? 12 : laneOffset)
+                              const startLabelY = connector.points[0][1] + (isHorizontal ? laneOffset : -6)
+                              const endLabelX =
+                                connector.points[connector.points.length - 1][0] +
+                                (isHorizontal ? -12 : laneOffset)
+                              const endLabelY =
+                                connector.points[connector.points.length - 1][1] +
+                                (isHorizontal ? laneOffset : -6)
 
                               return (
                                 <g key={`${node.key}-${link.sourceKey}-${link.sourceColumnName}`}>
@@ -2429,8 +2669,18 @@ function DashboardPage() {
                                     strokeWidth="2"
                                     markerEnd="url(#diagram-arrow)"
                                   />
-                                  <circle cx={connector.start.x} cy={connector.start.y} r="3.5" fill={theme.palette.success.main} />
-                                  <circle cx={connector.end.x} cy={connector.end.y} r="3.5" fill={theme.palette.error.main} />
+                                  <circle
+                                    cx={connector.start.x}
+                                    cy={connector.start.y}
+                                    r="3.5"
+                                    fill={theme.palette.success.main}
+                                  />
+                                  <circle
+                                    cx={connector.end.x}
+                                    cy={connector.end.y}
+                                    r="3.5"
+                                    fill={theme.palette.error.main}
+                                  />
                                   <text x={startLabelX} y={startLabelY} fill={theme.palette.success.main} fontSize="12" fontWeight="700">
                                     1
                                   </text>
