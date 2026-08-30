@@ -254,6 +254,15 @@ function getReferencedTableName(references) {
   return references.toString().split('.')[0].trim()
 }
 
+function createVirtualAnchor(element) {
+  const rect = element.getBoundingClientRect()
+
+  return {
+    contextElement: element,
+    getBoundingClientRect: () => rect,
+  }
+}
+
 function getColumnRole(table, columnName) {
   if (table.primaryKey?.includes(columnName)) {
     return 'pk'
@@ -512,7 +521,7 @@ function DashboardPage() {
   const [error, setError] = useState('')
   const [modeLabel, setModeLabel] = useState('mock')
   const [activeTableKey, setActiveTableKey] = useState('')
-  const [selectedSampleRowIndex, setSelectedSampleRowIndex] = useState(null)
+  const [selectedSampleRowTarget, setSelectedSampleRowTarget] = useState(null)
   const [hoverTableKey, setHoverTableKey] = useState('')
   const [hoverAnchorEl, setHoverAnchorEl] = useState(null)
   const hoverCloseTimerRef = useRef(null)
@@ -528,10 +537,6 @@ function DashboardPage() {
     const tableKey = `${schemaName}.${tableName}`
     setActiveTableKey((current) => (current === tableKey ? '' : tableKey))
   }, [])
-
-  useEffect(() => {
-    setSelectedSampleRowIndex(null)
-  }, [activeTableKey])
 
   const clearHoverCloseTimer = useCallback(() => {
     if (hoverCloseTimerRef.current) {
@@ -583,7 +588,7 @@ function DashboardPage() {
 
       setFkHoverPreview({
         ...preview,
-        anchorEl: event.currentTarget,
+        anchorEl: createVirtualAnchor(event.currentTarget),
       })
     },
     [clearFkHoverCloseTimer, schemas]
@@ -602,13 +607,20 @@ function DashboardPage() {
   }, [clearFkHoverCloseTimer])
 
   const navigateToForeignTable = useCallback(
-    (schemaName, references) => {
+    (schemaName, references, selectedValue) => {
       const targetTable = getReferencedTableName(references)
       if (!targetTable) {
         return
       }
 
       setActiveTableKey(`${schemaName}.${targetTable}`)
+      if (selectedValue !== undefined) {
+        setSelectedSampleRowTarget({
+          schemaName,
+          tableName: targetTable,
+          keyValue: selectedValue,
+        })
+      }
     },
     []
   )
@@ -750,6 +762,33 @@ function DashboardPage() {
       sampleRows: table.sampleRows ?? [],
     }
   }, [activeTableKey, schemas])
+
+  const selectedSampleRowIndex = useMemo(() => {
+    if (!activeTable || !selectedSampleRowTarget) {
+      return null
+    }
+
+    if (
+      selectedSampleRowTarget.schemaName !== activeTable.schemaName ||
+      selectedSampleRowTarget.tableName !== activeTable.tableName
+    ) {
+      return null
+    }
+
+    const primaryKey = activeTable.primaryKey?.[0]
+    if (primaryKey) {
+      const matchedIndex = activeTable.sampleRows.findIndex(
+        (row) => String(row?.[primaryKey] ?? '') === String(selectedSampleRowTarget.keyValue ?? '')
+      )
+      if (matchedIndex >= 0) {
+        return matchedIndex
+      }
+    }
+
+    return typeof selectedSampleRowTarget.keyValue === 'number'
+      ? selectedSampleRowTarget.keyValue
+      : null
+  }, [activeTable, selectedSampleRowTarget])
 
   return (
     <PageContainer>
@@ -1144,7 +1183,14 @@ function DashboardPage() {
                                                 key={`${activeTable.tableName}-row-${rowIndex}`}
                                                 hover
                                                 selected={isSelectedRow}
-                                                onClick={() => setSelectedSampleRowIndex(rowIndex)}
+                                                onClick={() =>
+                                                  setSelectedSampleRowTarget({
+                                                    schemaName: activeTable.schemaName,
+                                                    tableName: activeTable.tableName,
+                                                    keyValue:
+                                                      row[activeTable.primaryKey?.[0]] ?? rowIndex,
+                                                  })
+                                                }
                                                 sx={{
                                                   cursor: 'pointer',
                                                   '&:hover .MuiTableCell-root': {
@@ -1191,6 +1237,18 @@ function DashboardPage() {
                                                       }
                                                       onMouseLeave={
                                                         fkTarget ? closeFkHoverPreview : undefined
+                                                      }
+                                                      onClick={
+                                                        fkTarget
+                                                          ? (event) => {
+                                                              event.stopPropagation()
+                                                              navigateToForeignTable(
+                                                                activeTable.schemaName,
+                                                                fkTarget.references,
+                                                                row[columnName]
+                                                              )
+                                                            }
+                                                          : undefined
                                                       }
                                                     >
                                                       {row[columnName] ?? '-'}
