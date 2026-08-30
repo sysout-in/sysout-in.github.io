@@ -248,15 +248,37 @@ function normalizeForeignKeyList(value) {
 }
 
 function getReferencedTableName(references) {
+  const parsed = parseForeignKeyReference(references)
+  return parsed.tableName
+}
+
+function parseForeignKeyReference(references) {
   if (!references) {
-    return ''
+    return { schemaName: '', tableName: '', columnName: '' }
   }
 
-  return references.toString().split('.')[0].trim()
+  const parts = references
+    .toString()
+    .split('.')
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  if (parts.length >= 3) {
+    const [schemaName, tableName, ...rest] = parts
+    return { schemaName, tableName, columnName: rest.join('.') }
+  }
+
+  if (parts.length === 2) {
+    const [tableName, columnName] = parts
+    return { schemaName: '', tableName, columnName }
+  }
+
+  return { schemaName: '', tableName: parts[0] ?? '', columnName: '' }
 }
 
 function resolveReferencedTableLocation(schemas, fallbackSchemaName, references) {
-  const targetTableName = getReferencedTableName(references)
+  const parsedReference = parseForeignKeyReference(references)
+  const targetTableName = parsedReference.tableName
   if (!targetTableName) {
     return null
   }
@@ -264,7 +286,7 @@ function resolveReferencedTableLocation(schemas, fallbackSchemaName, references)
   const preferredSchema =
     schemas.find(
       (schema) =>
-        schema.schemaName === fallbackSchemaName &&
+        (parsedReference.schemaName ? schema.schemaName === parsedReference.schemaName : schema.schemaName === fallbackSchemaName) &&
         schema.tables.some((table) => table.tableName === targetTableName)
     ) ?? null
 
@@ -505,6 +527,85 @@ function buildSampleRows(tableName, columns) {
   })
 }
 
+function addForeignKeyLinkToSchemas(
+  schemas,
+  sourceSchemaName,
+  sourceTableName,
+  targetSchemaName,
+  targetTableName
+) {
+  return schemas.map((schema) => {
+    if (schema.schemaName !== sourceSchemaName && schema.schemaName !== targetSchemaName) {
+      return schema
+    }
+
+    return {
+      ...schema,
+      tables: schema.tables.map((table) => {
+        if (schema.schemaName === targetSchemaName && table.tableName === targetTableName) {
+          return table
+        }
+
+        if (schema.schemaName !== sourceSchemaName || table.tableName !== sourceTableName) {
+          return table
+        }
+
+        const targetTable = schemas
+          .find((item) => item.schemaName === targetSchemaName)
+          ?.tables?.find((item) => item.tableName === targetTableName)
+
+        if (!targetTable) {
+          return table
+        }
+
+        const targetPrimaryKey = targetTable.primaryKey?.[0] ?? 'id'
+        const fkColumnCandidates = [
+          `${targetTableName}_id`,
+          `${targetTableName.slice(0, -1)}_id`,
+        ]
+        const fkColumn =
+          table.columns.find((columnName) => fkColumnCandidates.includes(columnName)) ??
+          fkColumnCandidates[0]
+        const foreignKeyReference = `${targetSchemaName}.${targetTableName}.${targetPrimaryKey}`
+        const existingForeignKey = (table.foreignKeys ?? []).some(
+          (foreignKey) =>
+            foreignKey.column === fkColumn && foreignKey.references === foreignKeyReference
+        )
+        const nextColumns = table.columns.includes(fkColumn)
+          ? table.columns
+          : [...table.columns, fkColumn]
+        const targetValues = targetTable.sampleRows?.map((row) => row?.[targetPrimaryKey]).filter(
+          (value) => value !== undefined && value !== null
+        )
+
+        return {
+          ...table,
+          columns: nextColumns,
+          foreignKeys: existingForeignKey
+            ? table.foreignKeys
+            : [
+                ...(table.foreignKeys ?? []),
+                { column: fkColumn, references: foreignKeyReference },
+              ],
+          sampleRows: (table.sampleRows ?? []).map((row, rowIndex) => {
+            if (row[fkColumn] !== undefined && row[fkColumn] !== null) {
+              return row
+            }
+
+            const nextValue =
+              targetValues.length > 0 ? targetValues[rowIndex % targetValues.length] : rowIndex + 1
+
+            return {
+              ...row,
+              [fkColumn]: nextValue,
+            }
+          }),
+        }
+      }),
+    }
+  })
+}
+
 function normalizeTableEntry(entry, fallbackIndex) {
   if (typeof entry === 'string' || typeof entry === 'number') {
     return {
@@ -678,6 +779,8 @@ function DashboardPage() {
   const [hoverTableKey, setHoverTableKey] = useState('')
   const [hoverAnchorEl, setHoverAnchorEl] = useState(null)
   const [inboundUsagePreview, setInboundUsagePreview] = useState(null)
+  const [dragSourceTableKey, setDragSourceTableKey] = useState('')
+  const [dropTargetTableKey, setDropTargetTableKey] = useState('')
   const hoverCloseTimerRef = useRef(null)
   const inboundUsageCloseTimerRef = useRef(null)
   const [fkHoverPreview, setFkHoverPreview] = useState(null)
@@ -734,6 +837,11 @@ function DashboardPage() {
     }
   }, [])
 
+  const clearDragState = useCallback(() => {
+    setDragSourceTableKey('')
+    setDropTargetTableKey('')
+  }, [])
+
   const clearInboundUsageCloseTimer = useCallback(() => {
     if (inboundUsageCloseTimerRef.current) {
       window.clearTimeout(inboundUsageCloseTimerRef.current)
@@ -769,6 +877,75 @@ function DashboardPage() {
   const cancelHoverClose = useCallback(() => {
     clearHoverCloseTimer()
   }, [clearHoverCloseTimer])
+
+  const handleTableDragStart = useCallback((event, schemaName, tableName) => {
+    const tableKey = createTableKey(schemaName, tableName)
+    clearHoverCloseTimer()
+    setHoverAnchorEl(null)
+    setHoverTableKey('')
+    setFkHoverPreview(null)
+    setInboundUsagePreview(null)
+    setDragSourceTableKey(tableKey)
+    event.dataTransfer.effectAllowed = 'copy'
+    event.dataTransfer.setData('application/json', JSON.stringify({ schemaName, tableName }))
+  }, [clearHoverCloseTimer])
+
+  const handleTableDragEnd = useCallback(() => {
+    clearDragState()
+  }, [clearDragState])
+
+  const handleTableDrop = useCallback(
+    (event, targetSchemaName, targetTableName) => {
+      event.preventDefault()
+
+      let payload = null
+      try {
+        payload = JSON.parse(event.dataTransfer.getData('application/json'))
+      } catch (parseError) {
+        payload = null
+      }
+
+      const sourceSchemaName = payload?.schemaName
+      const sourceTableName = payload?.tableName
+
+      if (!sourceSchemaName || !sourceTableName) {
+        clearDragState()
+        return
+      }
+
+      if (sourceSchemaName === targetSchemaName && sourceTableName === targetTableName) {
+        clearDragState()
+        return
+      }
+
+      setSchemas((currentSchemas) =>
+        addForeignKeyLinkToSchemas(
+          currentSchemas,
+          sourceSchemaName,
+          sourceTableName,
+          targetSchemaName,
+          targetTableName
+        )
+      )
+
+      setActiveTableKey(createTableKey(sourceSchemaName, sourceTableName))
+      setSelectedSampleRowTarget(null)
+      setCompareSampleRowTarget(null)
+      setNavigationTrail([{ schemaName: sourceSchemaName, tableName: sourceTableName, keyValue: null }])
+      clearDragState()
+    },
+    [clearDragState]
+  )
+
+  const handleTableDragOver = useCallback((event, schemaName, tableName) => {
+    if (!dragSourceTableKey) {
+      return
+    }
+
+    event.preventDefault()
+    setDropTargetTableKey(createTableKey(schemaName, tableName))
+    event.dataTransfer.dropEffect = 'copy'
+  }, [dragSourceTableKey])
 
   const openInboundUsagePreview = useCallback(
     (event, schemaName, tableName) => {
@@ -1215,14 +1392,23 @@ function DashboardPage() {
                   Shift-click a row to set it as the compare row and show the row diff.
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
+                  Hover or click the IN badge to see inbound table chips. Remove a chip to drop that
+                  FK link from the page state.
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
                   Use the search box to filter by schema, table, column, FK reference, or sample
                   value. Breadcrumb chips show the path you followed and can be clicked to go back.
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Drag one table chip onto another to create a new FK link from the source table to
+                  the target table. Starting a drag closes the hover popups first.
                 </Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Chip label="Enter / Space: open table or follow FK" size="small" variant="outlined" />
                   <Chip label="Arrow keys: move between chips or rows" size="small" variant="outlined" />
                   <Chip label="Esc: close FK preview" size="small" variant="outlined" />
                   <Chip label="Shift-click: compare rows" size="small" variant="outlined" />
+                  <Chip label="Delete inbound chip: remove FK link" size="small" variant="outlined" />
                 </Stack>
               </Stack>
             </SectionCard>
@@ -1330,9 +1516,11 @@ function DashboardPage() {
                                   }
                                   onClick={() => toggleTable(schema.schemaName, table.tableName)}
                                   clickable
+                                  draggable
                                   tabIndex={0}
                                   data-table-chip-group={schema.schemaName}
                                   data-table-chip-order={index}
+                                  title="Drag to another table chip to create an FK"
                                   onMouseEnter={(event) =>
                                     openHoverTable(event, schema.schemaName, table.tableName)
                                   }
@@ -1341,6 +1529,21 @@ function DashboardPage() {
                                     openHoverTable(event, schema.schemaName, table.tableName)
                                   }
                                   onBlur={closeHoverTable}
+                                  onDragStart={(event) =>
+                                    handleTableDragStart(event, schema.schemaName, table.tableName)
+                                  }
+                                  onDragEnd={handleTableDragEnd}
+                                  onDragOver={(event) =>
+                                    handleTableDragOver(event, schema.schemaName, table.tableName)
+                                  }
+                                  onDragLeave={() => {
+                                    if (dropTargetTableKey === createTableKey(schema.schemaName, table.tableName)) {
+                                      setDropTargetTableKey('')
+                                    }
+                                  }}
+                                  onDrop={(event) =>
+                                    handleTableDrop(event, schema.schemaName, table.tableName)
+                                  }
                                   onKeyDown={(event) => {
                                     if (event.key === 'Enter' || event.key === ' ') {
                                       event.preventDefault()
@@ -1365,6 +1568,20 @@ function DashboardPage() {
                                       event.key === 'ArrowRight' ? currentIndex + 1 : currentIndex - 1
                                     const nextChip = chips[nextIndex]
                                     nextChip?.focus()
+                                  }}
+                                  sx={{
+                                    borderStyle: dragSourceTableKey === createTableKey(schema.schemaName, table.tableName)
+                                      ? 'dashed'
+                                      : 'solid',
+                                    borderWidth:
+                                      dragSourceTableKey === createTableKey(schema.schemaName, table.tableName)
+                                        ? 2
+                                        : 1,
+                                    outline:
+                                      dropTargetTableKey === createTableKey(schema.schemaName, table.tableName)
+                                        ? `2px solid ${theme.palette.secondary.main}`
+                                        : 'none',
+                                    outlineOffset: 2,
                                   }}
                                 />
                                 <Chip
