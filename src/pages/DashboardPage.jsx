@@ -17,6 +17,7 @@ import TableCell from '@mui/material/TableCell'
 import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
+import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { alpha, useTheme } from '@mui/material/styles'
 import httpClient from '../api/httpClient'
@@ -254,6 +255,37 @@ function getReferencedTableName(references) {
   return references.toString().split('.')[0].trim()
 }
 
+function resolveReferencedTableLocation(schemas, fallbackSchemaName, references) {
+  const targetTableName = getReferencedTableName(references)
+  if (!targetTableName) {
+    return null
+  }
+
+  const preferredSchema =
+    schemas.find(
+      (schema) =>
+        schema.schemaName === fallbackSchemaName &&
+        schema.tables.some((table) => table.tableName === targetTableName)
+    ) ?? null
+
+  const anyMatchingSchema =
+    schemas.find((schema) => schema.tables.some((table) => table.tableName === targetTableName)) ??
+    null
+
+  const targetSchema = preferredSchema ?? anyMatchingSchema
+  const targetTable = targetSchema?.tables?.find((table) => table.tableName === targetTableName)
+
+  if (!targetSchema || !targetTable) {
+    return null
+  }
+
+  return { schemaName: targetSchema.schemaName, table: targetTable }
+}
+
+function createTableKey(schemaName, tableName) {
+  return `${schemaName}.${tableName}`
+}
+
 function createVirtualAnchor(element) {
   const rect = element.getBoundingClientRect()
 
@@ -261,6 +293,111 @@ function createVirtualAnchor(element) {
     contextElement: element,
     getBoundingClientRect: () => rect,
   }
+}
+
+function getRowIdentityValue(table, row, rowIndex) {
+  const primaryKey = table.primaryKey?.[0]
+  if (primaryKey && row && Object.prototype.hasOwnProperty.call(row, primaryKey)) {
+    const value = row[primaryKey]
+    if (value !== undefined && value !== null) {
+      return value
+    }
+  }
+
+  return rowIndex
+}
+
+function resolveRowTarget(table, target) {
+  if (!table || !target) {
+    return { index: null, row: null }
+  }
+
+  if (
+    target.schemaName !== table.schemaName ||
+    target.tableName !== table.tableName ||
+    target.keyValue === undefined
+  ) {
+    return { index: null, row: null }
+  }
+
+  const primaryKey = table.primaryKey?.[0]
+  if (primaryKey) {
+    const index = table.sampleRows.findIndex(
+      (row) => String(row?.[primaryKey] ?? '') === String(target.keyValue ?? '')
+    )
+
+    if (index >= 0) {
+      return { index, row: table.sampleRows[index] }
+    }
+  }
+
+  if (typeof target.keyValue === 'number' && table.sampleRows[target.keyValue]) {
+    return { index: target.keyValue, row: table.sampleRows[target.keyValue] }
+  }
+
+  return { index: null, row: null }
+}
+
+function tableMatchesSearch(schemaName, table, query) {
+  if (!query) {
+    return true
+  }
+
+  const haystack = [
+    schemaName,
+    table.tableName,
+    ...(table.columns ?? []),
+    ...(table.primaryKey ?? []),
+    ...(table.foreignKeys ?? []).flatMap((fk) => [fk.column, fk.references]),
+    ...((table.sampleRows ?? []).flatMap((row) => Object.values(row ?? {}))),
+  ]
+    .filter((value) => value !== null && value !== undefined)
+    .join(' ')
+    .toLowerCase()
+
+  return haystack.includes(query)
+}
+
+function getInboundUsageSummary(schemas, schemaName, tableName) {
+  const summary = {
+    schemaName,
+    tableName,
+    pkCount: 0,
+    fkCount: 0,
+    inboundCount: 0,
+    inboundSources: [],
+  }
+
+  schemas.forEach((schema) => {
+    schema.tables.forEach((table) => {
+      if (schema.schemaName === schemaName && table.tableName === tableName) {
+        summary.pkCount = table.primaryKey?.length ?? 0
+        summary.fkCount = table.foreignKeys?.length ?? 0
+      }
+
+      ;(table.foreignKeys ?? []).forEach((foreignKey) => {
+        const resolvedTable = resolveReferencedTableLocation(
+          schemas,
+          schema.schemaName,
+          foreignKey.references
+        )
+
+        if (
+          resolvedTable?.schemaName === schemaName &&
+          resolvedTable.table.tableName === tableName
+        ) {
+          summary.inboundCount += 1
+          summary.inboundSources.push({
+            schemaName: schema.schemaName,
+            tableName: table.tableName,
+            columnName: foreignKey.column,
+          })
+        }
+      })
+    })
+  })
+
+  return summary
 }
 
 function getColumnRole(table, columnName) {
@@ -276,33 +413,24 @@ function getColumnRole(table, columnName) {
 }
 
 function getReferencedRowPreview(schemas, schemaName, references, value) {
-  const targetTableName = getReferencedTableName(references)
-  if (!targetTableName) {
+  const resolvedTable = resolveReferencedTableLocation(schemas, schemaName, references)
+  if (!resolvedTable) {
     return null
   }
 
-  const targetSchema =
-    schemas.find((schema) => schema.schemaName === schemaName) ??
-    schemas.find((schema) => schema.tables.some((table) => table.tableName === targetTableName))
-  const targetTable = targetSchema?.tables?.find((table) => table.tableName === targetTableName)
-
-  if (!targetTable) {
-    return null
-  }
-
-  const primaryKey = targetTable.primaryKey?.[0] ?? 'id'
+  const primaryKey = resolvedTable.table.primaryKey?.[0] ?? 'id'
   const matchedRow =
-    targetTable.sampleRows?.find(
+    resolvedTable.table.sampleRows?.find(
       (row) => String(row?.[primaryKey] ?? '') === String(value ?? '')
     ) ?? null
 
   return {
-    schemaName: targetSchema.schemaName,
-    tableName: targetTable.tableName,
+    schemaName: resolvedTable.schemaName,
+    tableName: resolvedTable.table.tableName,
     primaryKey,
-    foreignKeys: targetTable.foreignKeys ?? [],
+    foreignKeys: resolvedTable.table.foreignKeys ?? [],
     row: matchedRow,
-    columns: targetTable.columns ?? [],
+    columns: resolvedTable.table.columns ?? [],
   }
 }
 
@@ -520,11 +648,16 @@ function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [modeLabel, setModeLabel] = useState('mock')
+  const [searchQuery, setSearchQuery] = useState('')
   const [activeTableKey, setActiveTableKey] = useState('')
   const [selectedSampleRowTarget, setSelectedSampleRowTarget] = useState(null)
+  const [compareSampleRowTarget, setCompareSampleRowTarget] = useState(null)
+  const [navigationTrail, setNavigationTrail] = useState([])
   const [hoverTableKey, setHoverTableKey] = useState('')
   const [hoverAnchorEl, setHoverAnchorEl] = useState(null)
+  const [inboundUsagePreview, setInboundUsagePreview] = useState(null)
   const hoverCloseTimerRef = useRef(null)
+  const inboundUsageCloseTimerRef = useRef(null)
   const [fkHoverPreview, setFkHoverPreview] = useState(null)
   const fkHoverCloseTimerRef = useRef(null)
 
@@ -533,15 +666,56 @@ function DashboardPage() {
     [activeTableKey]
   )
 
-  const toggleTable = useCallback((schemaName, tableName) => {
-    const tableKey = `${schemaName}.${tableName}`
-    setActiveTableKey((current) => (current === tableKey ? '' : tableKey))
+  const toggleTable = useCallback(
+    (schemaName, tableName) => {
+      const tableKey = `${schemaName}.${tableName}`
+      const nextActiveTableKey = activeTableKey === tableKey ? '' : tableKey
+
+      setActiveTableKey(nextActiveTableKey)
+      setSelectedSampleRowTarget(null)
+      setCompareSampleRowTarget(null)
+      setNavigationTrail(
+        nextActiveTableKey ? [{ schemaName, tableName, keyValue: null }] : []
+      )
+    },
+    [activeTableKey]
+  )
+
+  const updateTrailForTable = useCallback((schemaName, tableName, keyValue = null) => {
+    setNavigationTrail((current) => {
+      const entry = { schemaName, tableName, keyValue }
+      const last = current[current.length - 1]
+
+      if (last && last.schemaName === schemaName && last.tableName === tableName) {
+        return [...current.slice(0, -1), entry]
+      }
+
+      return [...current, entry]
+    })
+  }, [])
+
+  const navigateBreadcrumb = useCallback((index, schemaName, tableName, keyValue) => {
+    setActiveTableKey(`${schemaName}.${tableName}`)
+    setSelectedSampleRowTarget(
+      keyValue !== null && keyValue !== undefined
+        ? { schemaName, tableName, keyValue }
+        : null
+    )
+    setCompareSampleRowTarget(null)
+    setNavigationTrail((current) => current.slice(0, index + 1))
   }, [])
 
   const clearHoverCloseTimer = useCallback(() => {
     if (hoverCloseTimerRef.current) {
       window.clearTimeout(hoverCloseTimerRef.current)
       hoverCloseTimerRef.current = null
+    }
+  }, [])
+
+  const clearInboundUsageCloseTimer = useCallback(() => {
+    if (inboundUsageCloseTimerRef.current) {
+      window.clearTimeout(inboundUsageCloseTimerRef.current)
+      inboundUsageCloseTimerRef.current = null
     }
   }, [])
 
@@ -573,6 +747,31 @@ function DashboardPage() {
   const cancelHoverClose = useCallback(() => {
     clearHoverCloseTimer()
   }, [clearHoverCloseTimer])
+
+  const openInboundUsagePreview = useCallback(
+    (event, schemaName, tableName) => {
+      clearInboundUsageCloseTimer()
+      const summary = getInboundUsageSummary(schemas, schemaName, tableName)
+
+      setInboundUsagePreview({
+        ...summary,
+        anchorEl: createVirtualAnchor(event.currentTarget),
+      })
+    },
+    [clearInboundUsageCloseTimer, schemas]
+  )
+
+  const closeInboundUsagePreview = useCallback(() => {
+    clearInboundUsageCloseTimer()
+    inboundUsageCloseTimerRef.current = window.setTimeout(() => {
+      setInboundUsagePreview(null)
+      inboundUsageCloseTimerRef.current = null
+    }, 120)
+  }, [clearInboundUsageCloseTimer])
+
+  const cancelInboundUsageClose = useCallback(() => {
+    clearInboundUsageCloseTimer()
+  }, [clearInboundUsageCloseTimer])
 
   const openFkHoverPreview = useCallback(
     (event, schemaName, references, value) => {
@@ -608,22 +807,38 @@ function DashboardPage() {
 
   const navigateToForeignTable = useCallback(
     (schemaName, references, selectedValue) => {
-      const targetTable = getReferencedTableName(references)
-      if (!targetTable) {
+      const resolvedTable = resolveReferencedTableLocation(schemas, schemaName, references)
+      if (!resolvedTable) {
         return
       }
 
-      setActiveTableKey(`${schemaName}.${targetTable}`)
+      setActiveTableKey(`${resolvedTable.schemaName}.${resolvedTable.table.tableName}`)
+      setCompareSampleRowTarget(null)
       if (selectedValue !== undefined) {
         setSelectedSampleRowTarget({
-          schemaName,
-          tableName: targetTable,
+          schemaName: resolvedTable.schemaName,
+          tableName: resolvedTable.table.tableName,
           keyValue: selectedValue,
         })
       }
+      setNavigationTrail((current) => [
+        ...current,
+        {
+          schemaName: resolvedTable.schemaName,
+          tableName: resolvedTable.table.tableName,
+          keyValue: selectedValue ?? null,
+        },
+      ])
     },
-    []
+    [schemas]
   )
+
+  const navigateToTable = useCallback((schemaName, tableName) => {
+    setActiveTableKey(createTableKey(schemaName, tableName))
+    setSelectedSampleRowTarget(null)
+    setCompareSampleRowTarget(null)
+    setNavigationTrail([{ schemaName, tableName, keyValue: null }])
+  }, [])
 
   const hoverTable = useMemo(() => {
     if (!hoverTableKey) {
@@ -726,7 +941,12 @@ function DashboardPage() {
     }
   }, [loadTables, user])
 
+  useEffect(() => {
+    setCompareSampleRowTarget(null)
+  }, [activeTableKey])
+
   useEffect(() => () => clearHoverCloseTimer(), [clearHoverCloseTimer])
+  useEffect(() => () => clearInboundUsageCloseTimer(), [clearInboundUsageCloseTimer])
   useEffect(() => () => clearFkHoverCloseTimer(), [clearFkHoverCloseTimer])
 
   const totalTables = useMemo(
@@ -763,32 +983,92 @@ function DashboardPage() {
     }
   }, [activeTableKey, schemas])
 
-  const selectedSampleRowIndex = useMemo(() => {
-    if (!activeTable || !selectedSampleRowTarget) {
-      return null
+  const selectedRowResolution = useMemo(
+    () => resolveRowTarget(activeTable, selectedSampleRowTarget),
+    [activeTable, selectedSampleRowTarget]
+  )
+
+  const compareRowResolution = useMemo(
+    () => resolveRowTarget(activeTable, compareSampleRowTarget),
+    [activeTable, compareSampleRowTarget]
+  )
+
+  const selectedSampleRowIndex = selectedRowResolution.index
+  const selectedSampleRow = selectedRowResolution.row
+  const compareSampleRowIndex = compareRowResolution.index
+  const compareSampleRow = compareRowResolution.row
+
+  const visibleSchemas = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+
+    if (!query) {
+      return schemas
     }
 
-    if (
-      selectedSampleRowTarget.schemaName !== activeTable.schemaName ||
-      selectedSampleRowTarget.tableName !== activeTable.tableName
-    ) {
-      return null
-    }
+    return schemas
+      .map((schema) => {
+        const schemaMatches = schema.schemaName.toLowerCase().includes(query)
+        const tables = schemaMatches
+          ? schema.tables
+          : schema.tables.filter((table) => tableMatchesSearch(schema.schemaName, table, query))
 
-    const primaryKey = activeTable.primaryKey?.[0]
-    if (primaryKey) {
-      const matchedIndex = activeTable.sampleRows.findIndex(
-        (row) => String(row?.[primaryKey] ?? '') === String(selectedSampleRowTarget.keyValue ?? '')
-      )
-      if (matchedIndex >= 0) {
-        return matchedIndex
-      }
-    }
+        return {
+          ...schema,
+          tables,
+        }
+      })
+      .filter((schema) => schema.tables.length > 0)
+  }, [schemas, searchQuery])
 
-    return typeof selectedSampleRowTarget.keyValue === 'number'
-      ? selectedSampleRowTarget.keyValue
-      : null
-  }, [activeTable, selectedSampleRowTarget])
+  const visibleTableCount = useMemo(
+    () => visibleSchemas.reduce((count, schema) => count + schema.tables.length, 0),
+    [visibleSchemas]
+  )
+
+  const tableRelationshipMap = useMemo(() => {
+    const map = new Map()
+
+    schemas.forEach((schema) => {
+      schema.tables.forEach((table) => {
+        map.set(createTableKey(schema.schemaName, table.tableName), {
+          schemaName: schema.schemaName,
+          tableName: table.tableName,
+          pkCount: table.primaryKey?.length ?? 0,
+          fkCount: table.foreignKeys?.length ?? 0,
+          inboundCount: 0,
+          inboundSources: [],
+        })
+      })
+    })
+
+    schemas.forEach((schema) => {
+      schema.tables.forEach((table) => {
+        ;(table.foreignKeys ?? []).forEach((foreignKey) => {
+          const resolvedTable = resolveReferencedTableLocation(
+            schemas,
+            schema.schemaName,
+            foreignKey.references
+          )
+
+          if (!resolvedTable) {
+            return
+          }
+
+          const summary = map.get(createTableKey(resolvedTable.schemaName, resolvedTable.table.tableName))
+          if (summary) {
+            summary.inboundCount += 1
+            summary.inboundSources.push({
+              schemaName: schema.schemaName,
+              tableName: table.tableName,
+              columnName: foreignKey.column,
+            })
+          }
+        })
+      })
+    })
+
+    return map
+  }, [schemas])
 
   return (
     <PageContainer>
@@ -874,36 +1154,230 @@ function DashboardPage() {
           </Box>
         ) : schemas.length > 0 ? (
           <Stack spacing={2}>
-            {schemas.map((schema) => (
-              <SectionCard
-                key={schema.schemaName}
-                title={`${schema.schemaName} (${schema.tables.length})`}
-              >
-                <Stack spacing={2}>
-                  {schema.tables.length > 0 ? (
-                    <>
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                        {schema.tables.map((table) => (
-                          <Chip
-                            key={`${schema.schemaName}-${table.tableName}`}
-                            label={table.tableName}
-                            color="primary"
-                            variant={
-                              isTableExpanded(schema.schemaName, table.tableName)
-                                ? 'filled'
-                                : 'outlined'
-                            }
-                            onClick={() => toggleTable(schema.schemaName, table.tableName)}
-                            clickable
-                            onMouseEnter={(event) =>
-                              openHoverTable(event, schema.schemaName, table.tableName)
-                            }
-                            onMouseLeave={closeHoverTable}
-                          />
-                        ))}
-                      </Stack>
+            <SectionCard title="How to use this page">
+              <Stack spacing={1.5}>
+                <Typography variant="body2" color="text.secondary">
+                  Click a table chip to open it. Hover a table chip to preview columns, and use the
+                  PK / FK / IN badges to understand table roles quickly.
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Click any FK cell to jump to the master table and auto-select the matching row.
+                  Shift-click a row to set it as the compare row and show the row diff.
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Use the search box to filter by schema, table, column, FK reference, or sample
+                  value. Breadcrumb chips show the path you followed and can be clicked to go back.
+                </Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Chip label="Enter / Space: open table or follow FK" size="small" variant="outlined" />
+                  <Chip label="Arrow keys: move between chips or rows" size="small" variant="outlined" />
+                  <Chip label="Esc: close FK preview" size="small" variant="outlined" />
+                  <Chip label="Shift-click: compare rows" size="small" variant="outlined" />
+                </Stack>
+              </Stack>
+            </SectionCard>
 
-                      <Popper
+            <Paper sx={{ p: 2 }}>
+              <Stack spacing={1.5}>
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={1}
+                  alignItems={{ xs: 'stretch', sm: 'center' }}
+                >
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Search tables, columns, FK values"
+                    placeholder="customers, category_id, 101, orders..."
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                  />
+                  <Button
+                    variant="outlined"
+                    onClick={() => setSearchQuery('')}
+                    disabled={!searchQuery}
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
+                    Clear
+                  </Button>
+                </Stack>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Chip label={`Schemas: ${visibleSchemas.length}`} color="primary" variant="outlined" />
+                  <Chip label={`Visible tables: ${visibleTableCount}`} color="secondary" variant="outlined" />
+                  {searchQuery ? (
+                    <Chip label={`Filter: ${searchQuery}`} color="info" variant="outlined" />
+                  ) : null}
+                </Stack>
+              </Stack>
+            </Paper>
+
+            {visibleSchemas.length > 0 ? (
+              visibleSchemas.map((schema) => (
+                <SectionCard
+                  key={schema.schemaName}
+                  title={`${schema.schemaName} (${schema.tables.length})`}
+                >
+                  <Stack spacing={2}>
+                    {navigationTrail.length > 0 ? (
+                      <Stack spacing={0.75}>
+                        <Typography variant="caption" fontWeight={700} color="text.secondary">
+                          Breadcrumbs
+                        </Typography>
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          {navigationTrail.map((entry, index) => {
+                            const isCurrent = index === navigationTrail.length - 1
+
+                            return (
+                              <Chip
+                                key={`${entry.schemaName}-${entry.tableName}-${index}`}
+                                label={
+                                  entry.keyValue !== null && entry.keyValue !== undefined
+                                    ? `${entry.tableName} #${entry.keyValue}`
+                                    : entry.tableName
+                                }
+                                color={isCurrent ? 'primary' : 'default'}
+                                variant={isCurrent ? 'filled' : 'outlined'}
+                                size="small"
+                                clickable
+                                onClick={() =>
+                                  navigateBreadcrumb(
+                                    index,
+                                    entry.schemaName,
+                                    entry.tableName,
+                                    entry.keyValue
+                                  )
+                                }
+                              />
+                            )
+                          })}
+                        </Stack>
+                      </Stack>
+                    ) : null}
+
+                    {schema.tables.length > 0 ? (
+                      <>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          {schema.tables.map((table, index) => {
+                            const tableSummary =
+                              tableRelationshipMap.get(`${schema.schemaName}.${table.tableName}`) ?? {
+                                pkCount: table.primaryKey?.length ?? 0,
+                                fkCount: table.foreignKeys?.length ?? 0,
+                                inboundCount: 0,
+                              }
+
+                            return (
+                              <Box
+                                key={`${schema.schemaName}-${table.tableName}`}
+                                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}
+                              >
+                                <Chip
+                                  label={table.tableName}
+                                  color="primary"
+                                  variant={
+                                    isTableExpanded(schema.schemaName, table.tableName)
+                                      ? 'filled'
+                                      : 'outlined'
+                                  }
+                                  onClick={() => toggleTable(schema.schemaName, table.tableName)}
+                                  clickable
+                                  tabIndex={0}
+                                  data-table-chip-group={schema.schemaName}
+                                  data-table-chip-order={index}
+                                  onMouseEnter={(event) =>
+                                    openHoverTable(event, schema.schemaName, table.tableName)
+                                  }
+                                  onMouseLeave={closeHoverTable}
+                                  onFocus={(event) =>
+                                    openHoverTable(event, schema.schemaName, table.tableName)
+                                  }
+                                  onBlur={closeHoverTable}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault()
+                                      toggleTable(schema.schemaName, table.tableName)
+                                      return
+                                    }
+
+                                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+                                      return
+                                    }
+
+                                    event.preventDefault()
+                                    const chips = Array.from(
+                                      event.currentTarget.parentElement?.parentElement?.querySelectorAll(
+                                        `[data-table-chip-group="${schema.schemaName}"]`
+                                      ) ?? []
+                                    )
+                                    const currentIndex = Number(
+                                      event.currentTarget.dataset.tableChipOrder ?? '0'
+                                    )
+                                    const nextIndex =
+                                      event.key === 'ArrowRight' ? currentIndex + 1 : currentIndex - 1
+                                    const nextChip = chips[nextIndex]
+                                    nextChip?.focus()
+                                  }}
+                                />
+                                <Chip
+                                  label={`PK ${tableSummary.pkCount}`}
+                                  size="small"
+                                  variant="outlined"
+                                  color="warning"
+                                />
+                                <Chip
+                                  label={`FK ${tableSummary.fkCount}`}
+                                  size="small"
+                                  variant="outlined"
+                                  color="info"
+                                />
+                                <Chip
+                                  label={`IN ${tableSummary.inboundCount}`}
+                                  size="small"
+                                  variant={tableSummary.inboundCount > 0 ? 'filled' : 'outlined'}
+                                  color="secondary"
+                                  clickable={tableSummary.inboundCount > 0}
+                                  onMouseEnter={(event) =>
+                                    tableSummary.inboundCount > 0
+                                      ? openInboundUsagePreview(
+                                          event,
+                                          schema.schemaName,
+                                          table.tableName
+                                        )
+                                      : undefined
+                                  }
+                                  onMouseLeave={
+                                    tableSummary.inboundCount > 0 ? closeInboundUsagePreview : undefined
+                                  }
+                                  onFocus={(event) =>
+                                    tableSummary.inboundCount > 0
+                                      ? openInboundUsagePreview(
+                                          event,
+                                          schema.schemaName,
+                                          table.tableName
+                                        )
+                                      : undefined
+                                  }
+                                  onBlur={
+                                    tableSummary.inboundCount > 0 ? closeInboundUsagePreview : undefined
+                                  }
+                                  onClick={
+                                    tableSummary.inboundCount > 0
+                                      ? (event) => {
+                                          event.stopPropagation()
+                                          openInboundUsagePreview(
+                                            event,
+                                            schema.schemaName,
+                                            table.tableName
+                                          )
+                                        }
+                                      : undefined
+                                  }
+                                />
+                              </Box>
+                            )
+                          })}
+                        </Stack>
+
+                        <Popper
                         open={Boolean(hoverAnchorEl) && Boolean(hoverTable)}
                         anchorEl={hoverAnchorEl}
                         placement="top-start"
@@ -970,9 +1444,9 @@ function DashboardPage() {
                             </Stack>
                           ) : null}
                         </Paper>
-                      </Popper>
+                        </Popper>
 
-                      <Popper
+                        <Popper
                         open={Boolean(fkHoverPreview)}
                         anchorEl={fkHoverPreview?.anchorEl ?? null}
                         placement="bottom-start"
@@ -1010,8 +1484,15 @@ function DashboardPage() {
                                 `
                                 : `0 8px 18px ${alpha(theme.palette.common.black, 0.1)}`,
                           }}
+                          tabIndex={0}
                           onMouseEnter={cancelFkHoverClose}
                           onMouseLeave={closeFkHoverPreview}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                              event.preventDefault()
+                              closeFkHoverPreview()
+                            }
+                          }}
                         >
                           {fkHoverPreview ? (
                             <Stack spacing={1}>
@@ -1080,11 +1561,62 @@ function DashboardPage() {
                             </Stack>
                           ) : null}
                         </Paper>
-                      </Popper>
+                        </Popper>
 
-                      <Collapse
-                        in={Boolean(activeTable) && activeTable.schemaName === schema.schemaName}
-                        timeout="auto"
+                        <Popper
+                          open={Boolean(inboundUsagePreview)}
+                          anchorEl={inboundUsagePreview?.anchorEl ?? null}
+                          placement="bottom-start"
+                          disablePortal
+                          modifiers={[
+                            { name: 'offset', options: { offset: [0, 8] } },
+                            { name: 'preventOverflow', options: { padding: 8 } },
+                          ]}
+                          style={{ zIndex: 1350 }}
+                          onMouseEnter={cancelInboundUsageClose}
+                          onMouseLeave={closeInboundUsagePreview}
+                        >
+                          <Paper
+                            elevation={6}
+                            sx={{ p: 1.5, maxWidth: 420 }}
+                            onMouseEnter={cancelInboundUsageClose}
+                            onMouseLeave={closeInboundUsagePreview}
+                          >
+                            {inboundUsagePreview ? (
+                              <Stack spacing={1}>
+                                <Typography variant="caption" fontWeight={700}>
+                                  Used by {inboundUsagePreview.inboundCount} table
+                                  {inboundUsagePreview.inboundCount === 1 ? '' : 's'}
+                                </Typography>
+                                {inboundUsagePreview.inboundSources.length > 0 ? (
+                                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                                    {inboundUsagePreview.inboundSources.map((source) => (
+                                      <Chip
+                                        key={`${source.schemaName}-${source.tableName}-${source.columnName}`}
+                                        label={`${source.tableName}.${source.columnName}`}
+                                        size="small"
+                                        variant="outlined"
+                                        color="primary"
+                                        clickable
+                                        onClick={() =>
+                                          navigateToTable(source.schemaName, source.tableName)
+                                        }
+                                      />
+                                    ))}
+                                  </Stack>
+                                ) : (
+                                  <Typography variant="body2" color="text.secondary">
+                                    No inbound references found.
+                                  </Typography>
+                                )}
+                              </Stack>
+                            ) : null}
+                          </Paper>
+                        </Popper>
+
+                        <Collapse
+                          in={Boolean(activeTable) && activeTable.schemaName === schema.schemaName}
+                          timeout="auto"
                         unmountOnExit
                       >
                         {activeTable && activeTable.schemaName === schema.schemaName ? (
@@ -1201,25 +1733,96 @@ function DashboardPage() {
                                         {(activeTable.sampleRows ?? []).length > 0 ? (
                                           activeTable.sampleRows.slice(0, 5).map((row, rowIndex) => {
                                             const isSelectedRow = selectedSampleRowIndex === rowIndex
+                                            const isCompareRow = compareSampleRowIndex === rowIndex
 
                                             return (
                                               <TableRow
                                                 key={`${activeTable.tableName}-row-${rowIndex}`}
                                                 hover
                                                 selected={isSelectedRow}
-                                                onClick={() =>
-                                                  setSelectedSampleRowTarget({
+                                                tabIndex={0}
+                                                data-row-table={activeTable.tableName}
+                                                data-row-order={rowIndex}
+                                                onClick={(event) => {
+                                                  const rowKey = getRowIdentityValue(
+                                                    activeTable,
+                                                    row,
+                                                    rowIndex
+                                                  )
+                                                  const rowTarget = {
                                                     schemaName: activeTable.schemaName,
                                                     tableName: activeTable.tableName,
-                                                    keyValue:
-                                                      row[activeTable.primaryKey?.[0]] ?? rowIndex,
-                                                  })
-                                                }
+                                                    keyValue: rowKey,
+                                                  }
+
+                                                  if (event.shiftKey || event.altKey) {
+                                                    setCompareSampleRowTarget(rowTarget)
+                                                    return
+                                                  }
+
+                                                  setSelectedSampleRowTarget(rowTarget)
+                                                  updateTrailForTable(
+                                                    activeTable.schemaName,
+                                                    activeTable.tableName,
+                                                    rowKey
+                                                  )
+                                                }}
+                                                onKeyDown={(event) => {
+                                                  if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault()
+                                                    const rowKey = getRowIdentityValue(
+                                                      activeTable,
+                                                      row,
+                                                      rowIndex
+                                                    )
+                                                    setSelectedSampleRowTarget({
+                                                      schemaName: activeTable.schemaName,
+                                                      tableName: activeTable.tableName,
+                                                      keyValue: rowKey,
+                                                    })
+                                                    updateTrailForTable(
+                                                      activeTable.schemaName,
+                                                      activeTable.tableName,
+                                                      rowKey
+                                                    )
+                                                    return
+                                                  }
+
+                                                  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+                                                    return
+                                                  }
+
+                                                  event.preventDefault()
+                                                  const rows = Array.from(
+                                                    event.currentTarget.parentElement?.querySelectorAll(
+                                                      `[data-row-table="${activeTable.tableName}"]`
+                                                    ) ?? []
+                                                  )
+                                                  const currentIndex = Number(
+                                                    event.currentTarget.dataset.rowOrder ?? '0'
+                                                  )
+                                                  const nextIndex =
+                                                    event.key === 'ArrowDown'
+                                                      ? currentIndex + 1
+                                                      : currentIndex - 1
+                                                  rows[nextIndex]?.focus()
+                                                }}
                                                 sx={{
                                                   cursor: 'pointer',
                                                   '&:hover .MuiTableCell-root': {
                                                     filter: 'brightness(0.98)',
                                                   },
+                                                  ...(isCompareRow && !isSelectedRow
+                                                    ? {
+                                                        bgcolor: alpha(
+                                                          theme.palette.secondary.main,
+                                                          theme.palette.mode === 'dark' ? 0.16 : 0.08
+                                                        ),
+                                                        '& .MuiTableCell-root': {
+                                                          borderColor: theme.palette.secondary.main,
+                                                        },
+                                                      }
+                                                    : {}),
                                                 }}
                                               >
                                                 {activeTable.columns.map((columnName) => {
@@ -1228,25 +1831,45 @@ function DashboardPage() {
                                                   const fkTarget = activeTable.foreignKeys.find(
                                                     (key) => key.column === columnName
                                                   )
+                                                  const cellBg = isSelectedRow
+                                                    ? alpha(
+                                                        theme.palette.primary.main,
+                                                        theme.palette.mode === 'dark' ? 0.18 : 0.1
+                                                      )
+                                                    : isCompareRow
+                                                      ? alpha(
+                                                          theme.palette.secondary.main,
+                                                          theme.palette.mode === 'dark' ? 0.14 : 0.075
+                                                        )
+                                                      : palette.bg
+                                                  const cellBorder = isSelectedRow
+                                                    ? theme.palette.primary.main
+                                                    : isCompareRow
+                                                      ? theme.palette.secondary.main
+                                                      : palette.border
+                                                  const cellWeight = isSelectedRow
+                                                    ? 700
+                                                    : isCompareRow
+                                                      ? 600
+                                                      : 400
 
                                                   return (
                                                     <TableCell
                                                       key={`${activeTable.tableName}-row-${rowIndex}-${columnName}`}
                                                       sx={{
-                                                        bgcolor: isSelectedRow
-                                                          ? alpha(
-                                                              theme.palette.primary.main,
-                                                              theme.palette.mode === 'dark'
-                                                                ? 0.18
-                                                                : 0.1
-                                                            )
-                                                          : palette.bg,
+                                                        bgcolor: cellBg,
                                                         color: palette.dataText,
-                                                        borderColor: isSelectedRow
-                                                          ? theme.palette.primary.main
-                                                          : palette.border,
-                                                        fontWeight: isSelectedRow ? 700 : 400,
+                                                        borderColor: cellBorder,
+                                                        fontWeight: cellWeight,
                                                         cursor: fkTarget ? 'pointer' : 'default',
+                                                        ...(isSelectedRow
+                                                          ? {
+                                                              boxShadow: `inset 0 0 0 1px ${alpha(
+                                                                theme.palette.primary.main,
+                                                                0.28
+                                                              )}`,
+                                                            }
+                                                          : {}),
                                                       }}
                                                       onMouseEnter={
                                                         fkTarget
@@ -1271,6 +1894,42 @@ function DashboardPage() {
                                                                 fkTarget.references,
                                                                 row[columnName]
                                                               )
+                                                            }
+                                                          : undefined
+                                                      }
+                                                      tabIndex={fkTarget ? 0 : -1}
+                                                      onFocus={
+                                                        fkTarget
+                                                          ? (event) =>
+                                                              openFkHoverPreview(
+                                                                event,
+                                                                activeTable.schemaName,
+                                                                fkTarget.references,
+                                                                row[columnName]
+                                                              )
+                                                          : undefined
+                                                      }
+                                                      onBlur={fkTarget ? closeFkHoverPreview : undefined}
+                                                      onKeyDown={
+                                                        fkTarget
+                                                          ? (event) => {
+                                                              if (
+                                                                event.key === 'Enter' ||
+                                                                event.key === ' '
+                                                              ) {
+                                                                event.preventDefault()
+                                                                navigateToForeignTable(
+                                                                  activeTable.schemaName,
+                                                                  fkTarget.references,
+                                                                  row[columnName]
+                                                                )
+                                                                return
+                                                              }
+
+                                                              if (event.key === 'Escape') {
+                                                                event.preventDefault()
+                                                                closeFkHoverPreview()
+                                                              }
                                                             }
                                                           : undefined
                                                       }
@@ -1300,25 +1959,106 @@ function DashboardPage() {
                                     </Table>
                                   </TableContainer>
                                 </Box>
+
+                                {selectedSampleRow && compareSampleRow ? (
+                                  <Box sx={{ pt: 1.25 }}>
+                                    <Stack direction="row" spacing={1} alignItems="center">
+                                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                                        Row diff
+                                      </Typography>
+                                      <Chip
+                                        label="Selected vs Compare"
+                                        size="small"
+                                        color="secondary"
+                                        variant="outlined"
+                                      />
+                                    </Stack>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      sx={{ display: 'block', mt: 0.5 }}
+                                    >
+                                      Shift-click a row to set the comparison row.
+                                    </Typography>
+                                    <TableContainer
+                                      component={Paper}
+                                      variant="outlined"
+                                      sx={{
+                                        mt: 0.75,
+                                        borderColor: alpha(theme.palette.secondary.main, 0.18),
+                                        bgcolor: alpha(theme.palette.secondary.main, 0.02),
+                                      }}
+                                    >
+                                      <Table size="small">
+                                        <TableHead>
+                                          <TableRow>
+                                            <TableCell sx={{ fontWeight: 700 }}>Column</TableCell>
+                                            <TableCell sx={{ fontWeight: 700 }}>Selected</TableCell>
+                                            <TableCell sx={{ fontWeight: 700 }}>Compare</TableCell>
+                                          </TableRow>
+                                        </TableHead>
+                                        <TableBody>
+                                          {activeTable.columns.map((columnName) => {
+                                            const selectedValue = selectedSampleRow[columnName] ?? '-'
+                                            const compareValue = compareSampleRow[columnName] ?? '-'
+                                            const changed =
+                                              String(selectedValue) !== String(compareValue)
+
+                                            return (
+                                              <TableRow key={`diff-${activeTable.tableName}-${columnName}`}>
+                                                <TableCell sx={{ fontWeight: 700 }}>{columnName}</TableCell>
+                                                <TableCell
+                                                  sx={{
+                                                    bgcolor: changed
+                                                      ? alpha(theme.palette.primary.main, 0.08)
+                                                      : 'transparent',
+                                                  }}
+                                                >
+                                                  {selectedValue}
+                                                </TableCell>
+                                                <TableCell
+                                                  sx={{
+                                                    bgcolor: changed
+                                                      ? alpha(theme.palette.secondary.main, 0.08)
+                                                      : 'transparent',
+                                                  }}
+                                                >
+                                                  {compareValue}
+                                                </TableCell>
+                                              </TableRow>
+                                            )
+                                          })}
+                                        </TableBody>
+                                      </Table>
+                                    </TableContainer>
+                                  </Box>
+                                ) : null}
                               </Stack>
                             </Paper>
                           </Box>
                         ) : null}
-                      </Collapse>
-                    </>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary">
-                      No tables returned for this schema.
-                    </Typography>
-                  )}
+                        </Collapse>
+                      </>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        No tables returned for this schema.
+                      </Typography>
+                    )}
 
-                  <Divider />
-                  <Typography variant="body2" color="text.secondary">
-                    Schema: {schema.schemaName}
-                  </Typography>
-                </Stack>
+                    <Divider />
+                    <Typography variant="body2" color="text.secondary">
+                      Schema: {schema.schemaName}
+                    </Typography>
+                  </Stack>
+                </SectionCard>
+              ))
+            ) : (
+              <SectionCard title="No matches">
+                <Typography variant="body2" color="text.secondary">
+                  No schemas, tables, columns, or FK values matched the search.
+                </Typography>
               </SectionCard>
-            ))}
+            )}
           </Stack>
         ) : (
           <SectionCard title="No table data">
