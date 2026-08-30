@@ -266,6 +266,37 @@ function getColumnRole(table, columnName) {
   return 'general'
 }
 
+function getReferencedRowPreview(schemas, schemaName, references, value) {
+  const targetTableName = getReferencedTableName(references)
+  if (!targetTableName) {
+    return null
+  }
+
+  const targetSchema =
+    schemas.find((schema) => schema.schemaName === schemaName) ??
+    schemas.find((schema) => schema.tables.some((table) => table.tableName === targetTableName))
+  const targetTable = targetSchema?.tables?.find((table) => table.tableName === targetTableName)
+
+  if (!targetTable) {
+    return null
+  }
+
+  const primaryKey = targetTable.primaryKey?.[0] ?? 'id'
+  const matchedRow =
+    targetTable.sampleRows?.find(
+      (row) => String(row?.[primaryKey] ?? '') === String(value ?? '')
+    ) ?? null
+
+  return {
+    schemaName: targetSchema.schemaName,
+    tableName: targetTable.tableName,
+    primaryKey,
+    foreignKeys: targetTable.foreignKeys ?? [],
+    row: matchedRow,
+    columns: targetTable.columns ?? [],
+  }
+}
+
 function formatSampleValue(tableName, columnName, rowIndex) {
   const key = columnName.toLowerCase()
 
@@ -484,6 +515,8 @@ function DashboardPage() {
   const [hoverTableKey, setHoverTableKey] = useState('')
   const [hoverAnchorEl, setHoverAnchorEl] = useState(null)
   const hoverCloseTimerRef = useRef(null)
+  const [fkHoverPreview, setFkHoverPreview] = useState(null)
+  const fkHoverCloseTimerRef = useRef(null)
 
   const isTableExpanded = useCallback(
     (schemaName, tableName) => activeTableKey === `${schemaName}.${tableName}`,
@@ -499,6 +532,13 @@ function DashboardPage() {
     if (hoverCloseTimerRef.current) {
       window.clearTimeout(hoverCloseTimerRef.current)
       hoverCloseTimerRef.current = null
+    }
+  }, [])
+
+  const clearFkHoverCloseTimer = useCallback(() => {
+    if (fkHoverCloseTimerRef.current) {
+      window.clearTimeout(fkHoverCloseTimerRef.current)
+      fkHoverCloseTimerRef.current = null
     }
   }, [])
 
@@ -523,6 +563,38 @@ function DashboardPage() {
   const cancelHoverClose = useCallback(() => {
     clearHoverCloseTimer()
   }, [clearHoverCloseTimer])
+
+  const openFkHoverPreview = useCallback(
+    (event, schemaName, references, value) => {
+      clearFkHoverCloseTimer()
+      const preview =
+        getReferencedRowPreview(schemas, schemaName, references, value) ?? {
+          schemaName,
+          tableName: getReferencedTableName(references),
+          primaryKey: 'id',
+          row: null,
+          columns: [],
+        }
+
+      setFkHoverPreview({
+        ...preview,
+        anchorEl: event.currentTarget,
+      })
+    },
+    [clearFkHoverCloseTimer, schemas]
+  )
+
+  const closeFkHoverPreview = useCallback(() => {
+    clearFkHoverCloseTimer()
+    fkHoverCloseTimerRef.current = window.setTimeout(() => {
+      setFkHoverPreview(null)
+      fkHoverCloseTimerRef.current = null
+    }, 120)
+  }, [clearFkHoverCloseTimer])
+
+  const cancelFkHoverClose = useCallback(() => {
+    clearFkHoverCloseTimer()
+  }, [clearFkHoverCloseTimer])
 
   const navigateToForeignTable = useCallback(
     (schemaName, references) => {
@@ -629,7 +701,7 @@ function DashboardPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [auth0Audience, getAccessTokenSilently])
+  }, [getAccessTokenSilently])
 
   useEffect(() => {
     if (user) {
@@ -638,6 +710,7 @@ function DashboardPage() {
   }, [loadTables, user])
 
   useEffect(() => () => clearHoverCloseTimer(), [clearHoverCloseTimer])
+  useEffect(() => () => clearFkHoverCloseTimer(), [clearFkHoverCloseTimer])
 
   const totalTables = useMemo(
     () => schemas.reduce((count, schema) => count + schema.tables.length, 0),
@@ -855,6 +928,92 @@ function DashboardPage() {
                         </Paper>
                       </Popper>
 
+                      <Popper
+                        open={Boolean(fkHoverPreview)}
+                        anchorEl={fkHoverPreview?.anchorEl ?? null}
+                        placement="bottom-start"
+                        disablePortal
+                        modifiers={[
+                          { name: 'offset', options: { offset: [0, 8] } },
+                          { name: 'preventOverflow', options: { padding: 8 } },
+                        ]}
+                        style={{ zIndex: 1400 }}
+                        onMouseEnter={cancelFkHoverClose}
+                        onMouseLeave={closeFkHoverPreview}
+                      >
+                        <Paper
+                          elevation={6}
+                          sx={{
+                            p: 1.5,
+                            width: 'min(100vw - 32px, 960px)',
+                            maxWidth: 'none',
+                          }}
+                          onMouseEnter={cancelFkHoverClose}
+                          onMouseLeave={closeFkHoverPreview}
+                        >
+                          {fkHoverPreview ? (
+                            <Stack spacing={1}>
+                              <Typography variant="caption" fontWeight={700}>
+                                {fkHoverPreview.tableName} master row
+                              </Typography>
+                              {fkHoverPreview.row ? (
+                                <TableContainer component={Box} sx={{ width: '100%', overflowX: 'hidden' }}>
+                                  <Table size="small" sx={{ width: '100%' }}>
+                                    <TableHead>
+                                      <TableRow>
+                                        {fkHoverPreview.columns.map((columnName) => {
+                                          const role = getColumnRole(fkHoverPreview, columnName)
+                                          const palette = getColumnPalette(role)
+
+                                          return (
+                                            <TableCell
+                                              key={`fk-head-${fkHoverPreview.tableName}-${columnName}`}
+                                              sx={{
+                                                bgcolor: palette.headerBg,
+                                                fontWeight: 700,
+                                                color: palette.headerText,
+                                                borderColor: palette.border,
+                                              }}
+                                            >
+                                              {columnName}
+                                            </TableCell>
+                                          )
+                                        })}
+                                      </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                      <TableRow>
+                                        {fkHoverPreview.columns.map((columnName) => {
+                                          const role = getColumnRole(fkHoverPreview, columnName)
+                                          const palette = getColumnPalette(role)
+
+                                          return (
+                                            <TableCell
+                                              key={`fk-cell-${fkHoverPreview.tableName}-${columnName}`}
+                                              sx={{
+                                                bgcolor: palette.bg,
+                                                color: palette.dataText,
+                                                borderColor: palette.border,
+                                              }}
+                                            >
+                                              {fkHoverPreview.row[columnName] ?? '-'}
+                                            </TableCell>
+                                          )
+                                        })}
+                                      </TableRow>
+                                    </TableBody>
+                                  </Table>
+                                </TableContainer>
+                              ) : (
+                                <Typography variant="body2" color="text.secondary">
+                                  No matching master row found.
+                                </Typography>
+                              )}
+                            </Stack>
+                          ) : null}
+                        </Paper>
+                      </Popper>
+
                       <Collapse
                         in={Boolean(activeTable) && activeTable.schemaName === schema.schemaName}
                         timeout="auto"
@@ -985,6 +1144,9 @@ function DashboardPage() {
                                                 {activeTable.columns.map((columnName) => {
                                                   const role = getColumnRole(activeTable, columnName)
                                                   const palette = getColumnPalette(role)
+                                                  const fkTarget = activeTable.foreignKeys.find(
+                                                    (key) => key.column === columnName
+                                                  )
 
                                                   return (
                                                     <TableCell
@@ -993,7 +1155,22 @@ function DashboardPage() {
                                                         bgcolor: palette.bg,
                                                         color: palette.dataText,
                                                         borderColor: palette.border,
+                                                        cursor: fkTarget ? 'pointer' : 'default',
                                                       }}
+                                                      onMouseEnter={
+                                                        fkTarget
+                                                          ? (event) =>
+                                                              openFkHoverPreview(
+                                                                event,
+                                                                activeTable.schemaName,
+                                                                fkTarget.references,
+                                                                row[columnName]
+                                                              )
+                                                          : undefined
+                                                      }
+                                                      onMouseLeave={
+                                                        fkTarget ? closeFkHoverPreview : undefined
+                                                      }
                                                     >
                                                       {row[columnName] ?? '-'}
                                                     </TableCell>
