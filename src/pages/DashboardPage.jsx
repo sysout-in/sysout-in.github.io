@@ -1,5 +1,5 @@
 import { useAuth0 } from '@auth0/auth0-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Avatar from '@mui/material/Avatar'
 import Box from '@mui/material/Box'
@@ -9,8 +9,14 @@ import CircularProgress from '@mui/material/CircularProgress'
 import Collapse from '@mui/material/Collapse'
 import Divider from '@mui/material/Divider'
 import Paper from '@mui/material/Paper'
+import Popper from '@mui/material/Popper'
 import Stack from '@mui/material/Stack'
-import Tooltip from '@mui/material/Tooltip'
+import Table from '@mui/material/Table'
+import TableBody from '@mui/material/TableBody'
+import TableCell from '@mui/material/TableCell'
+import TableContainer from '@mui/material/TableContainer'
+import TableHead from '@mui/material/TableHead'
+import TableRow from '@mui/material/TableRow'
 import Typography from '@mui/material/Typography'
 import httpClient from '../api/httpClient'
 import PageContainer from '../components/common/PageContainer'
@@ -27,42 +33,136 @@ const mockTableResponse = {
         {
           tableName: 'customers',
           columns: ['id', 'first_name', 'last_name', 'email', 'phone', 'created_at'],
+          primaryKey: ['id'],
+          sampleRows: [
+            { id: 1, first_name: 'Aarav', last_name: 'Sharma', email: 'aarav.sharma@example.com', phone: '+1-555-0101', created_at: '2026-08-01T09:15:00Z' },
+            { id: 2, first_name: 'Diya', last_name: 'Patel', email: 'diya.patel@example.com', phone: '+1-555-0102', created_at: '2026-08-02T11:05:00Z' },
+            { id: 3, first_name: 'Rohan', last_name: 'Mehta', email: 'rohan.mehta@example.com', phone: '+1-555-0103', created_at: '2026-08-03T13:20:00Z' },
+            { id: 4, first_name: 'Anika', last_name: 'Verma', email: 'anika.verma@example.com', phone: '+1-555-0104', created_at: '2026-08-04T15:10:00Z' },
+            { id: 5, first_name: 'Kabir', last_name: 'Iyer', email: 'kabir.iyer@example.com', phone: '+1-555-0105', created_at: '2026-08-05T18:45:00Z' },
+          ],
         },
         {
           tableName: 'products',
           columns: ['id', 'name', 'sku', 'price', 'stock_quantity', 'category_id'],
+          primaryKey: ['id'],
+          foreignKeys: [{ column: 'category_id', references: 'categories.id' }],
+          sampleRows: [
+            { id: 101, name: 'Wireless Mouse', sku: 'WM-1001', price: '24.99', stock_quantity: 48, category_id: 10 },
+            { id: 102, name: 'Mechanical Keyboard', sku: 'MK-1002', price: '79.99', stock_quantity: 31, category_id: 10 },
+            { id: 103, name: 'Noise Cancelling Headphones', sku: 'NH-1003', price: '129.99', stock_quantity: 17, category_id: 10 },
+            { id: 104, name: 'Coffee Mug', sku: 'CM-1004', price: '12.50', stock_quantity: 90, category_id: 12 },
+            { id: 105, name: 'Desk Lamp', sku: 'DL-1005', price: '34.95', stock_quantity: 26, category_id: 13 },
+          ],
         },
         {
           tableName: 'categories',
           columns: ['id', 'name', 'slug', 'parent_id'],
+          primaryKey: ['id'],
+          foreignKeys: [{ column: 'parent_id', references: 'categories.id' }],
+          sampleRows: [
+            { id: 10, name: 'Electronics', slug: 'electronics', parent_id: null },
+            { id: 11, name: 'Accessories', slug: 'accessories', parent_id: 10 },
+            { id: 12, name: 'Home & Kitchen', slug: 'home-kitchen', parent_id: null },
+            { id: 13, name: 'Lighting', slug: 'lighting', parent_id: 12 },
+            { id: 14, name: 'Office', slug: 'office', parent_id: null },
+          ],
         },
         {
           tableName: 'carts',
           columns: ['id', 'customer_id', 'status', 'created_at', 'updated_at'],
+          primaryKey: ['id'],
+          foreignKeys: [{ column: 'customer_id', references: 'customers.id' }],
+          sampleRows: [
+            { id: 1001, customer_id: 1, status: 'active', created_at: '2026-08-06T08:30:00Z', updated_at: '2026-08-06T09:00:00Z' },
+            { id: 1002, customer_id: 2, status: 'checked_out', created_at: '2026-08-06T10:15:00Z', updated_at: '2026-08-06T10:45:00Z' },
+            { id: 1003, customer_id: 3, status: 'active', created_at: '2026-08-07T12:00:00Z', updated_at: '2026-08-07T12:20:00Z' },
+            { id: 1004, customer_id: 4, status: 'abandoned', created_at: '2026-08-08T14:10:00Z', updated_at: '2026-08-08T16:00:00Z' },
+            { id: 1005, customer_id: 5, status: 'active', created_at: '2026-08-09T17:25:00Z', updated_at: '2026-08-09T17:40:00Z' },
+          ],
         },
         {
           tableName: 'cart_items',
           columns: ['id', 'cart_id', 'product_id', 'quantity', 'unit_price'],
+          primaryKey: ['id'],
+          foreignKeys: [
+            { column: 'cart_id', references: 'carts.id' },
+            { column: 'product_id', references: 'products.id' },
+          ],
+          sampleRows: [
+            { id: 2001, cart_id: 1001, product_id: 101, quantity: 1, unit_price: '24.99' },
+            { id: 2002, cart_id: 1001, product_id: 102, quantity: 1, unit_price: '79.99' },
+            { id: 2003, cart_id: 1002, product_id: 103, quantity: 2, unit_price: '129.99' },
+            { id: 2004, cart_id: 1003, product_id: 104, quantity: 3, unit_price: '12.50' },
+            { id: 2005, cart_id: 1005, product_id: 105, quantity: 1, unit_price: '34.95' },
+          ],
         },
         {
           tableName: 'orders',
           columns: ['id', 'customer_id', 'order_number', 'status', 'total_amount', 'created_at'],
+          primaryKey: ['id'],
+          foreignKeys: [{ column: 'customer_id', references: 'customers.id' }],
+          sampleRows: [
+            { id: 3001, customer_id: 2, order_number: 'ORD-2026-0801', status: 'paid', total_amount: '104.98', created_at: '2026-08-06T10:50:00Z' },
+            { id: 3002, customer_id: 3, order_number: 'ORD-2026-0802', status: 'processing', total_amount: '259.98', created_at: '2026-08-07T12:30:00Z' },
+            { id: 3003, customer_id: 1, order_number: 'ORD-2026-0803', status: 'shipped', total_amount: '34.95', created_at: '2026-08-08T15:10:00Z' },
+            { id: 3004, customer_id: 5, order_number: 'ORD-2026-0804', status: 'paid', total_amount: '129.99', created_at: '2026-08-09T18:00:00Z' },
+            { id: 3005, customer_id: 4, order_number: 'ORD-2026-0805', status: 'cancelled', total_amount: '12.50', created_at: '2026-08-10T09:45:00Z' },
+          ],
         },
         {
           tableName: 'order_items',
           columns: ['id', 'order_id', 'product_id', 'quantity', 'unit_price', 'line_total'],
+          primaryKey: ['id'],
+          foreignKeys: [
+            { column: 'order_id', references: 'orders.id' },
+            { column: 'product_id', references: 'products.id' },
+          ],
+          sampleRows: [
+            { id: 4001, order_id: 3001, product_id: 101, quantity: 1, unit_price: '24.99', line_total: '24.99' },
+            { id: 4002, order_id: 3001, product_id: 102, quantity: 1, unit_price: '79.99', line_total: '79.99' },
+            { id: 4003, order_id: 3002, product_id: 103, quantity: 2, unit_price: '129.99', line_total: '259.98' },
+            { id: 4004, order_id: 3003, product_id: 105, quantity: 1, unit_price: '34.95', line_total: '34.95' },
+            { id: 4005, order_id: 3004, product_id: 104, quantity: 1, unit_price: '12.50', line_total: '12.50' },
+          ],
         },
         {
           tableName: 'payments',
           columns: ['id', 'order_id', 'payment_method', 'amount', 'status', 'paid_at'],
+          primaryKey: ['id'],
+          foreignKeys: [{ column: 'order_id', references: 'orders.id' }],
+          sampleRows: [
+            { id: 5001, order_id: 3001, payment_method: 'card', amount: '104.98', status: 'paid', paid_at: '2026-08-06T10:52:00Z' },
+            { id: 5002, order_id: 3002, payment_method: 'upi', amount: '259.98', status: 'paid', paid_at: '2026-08-07T12:34:00Z' },
+            { id: 5003, order_id: 3003, payment_method: 'card', amount: '34.95', status: 'paid', paid_at: '2026-08-08T15:12:00Z' },
+            { id: 5004, order_id: 3004, payment_method: 'netbanking', amount: '129.99', status: 'pending', paid_at: null },
+            { id: 5005, order_id: 3005, payment_method: 'card', amount: '12.50', status: 'refunded', paid_at: '2026-08-10T10:00:00Z' },
+          ],
         },
         {
           tableName: 'shipments',
           columns: ['id', 'order_id', 'carrier', 'tracking_number', 'status', 'shipped_at'],
+          primaryKey: ['id'],
+          foreignKeys: [{ column: 'order_id', references: 'orders.id' }],
+          sampleRows: [
+            { id: 6001, order_id: 3001, carrier: 'Delhivery', tracking_number: 'DLV-3001-01', status: 'delivered', shipped_at: '2026-08-07T08:00:00Z' },
+            { id: 6002, order_id: 3002, carrier: 'Blue Dart', tracking_number: 'BD-3002-01', status: 'in_transit', shipped_at: '2026-08-08T09:20:00Z' },
+            { id: 6003, order_id: 3003, carrier: 'Ekart', tracking_number: 'EK-3003-01', status: 'delivered', shipped_at: '2026-08-09T11:15:00Z' },
+            { id: 6004, order_id: 3004, carrier: 'DHL', tracking_number: 'DHL-3004-01', status: 'label_created', shipped_at: null },
+            { id: 6005, order_id: 3005, carrier: 'FedEx', tracking_number: 'FDX-3005-01', status: 'returned', shipped_at: '2026-08-10T12:30:00Z' },
+          ],
         },
         {
           tableName: 'discount_codes',
           columns: ['id', 'code', 'discount_type', 'discount_value', 'expires_at', 'active'],
+          primaryKey: ['id'],
+          sampleRows: [
+            { id: 7001, code: 'SAVE10', discount_type: 'percent', discount_value: '10', expires_at: '2026-12-31T23:59:59Z', active: true },
+            { id: 7002, code: 'WELCOME50', discount_type: 'flat', discount_value: '50', expires_at: '2026-10-31T23:59:59Z', active: true },
+            { id: 7003, code: 'FESTIVE15', discount_type: 'percent', discount_value: '15', expires_at: '2026-09-30T23:59:59Z', active: true },
+            { id: 7004, code: 'CLEARANCE25', discount_type: 'percent', discount_value: '25', expires_at: '2026-08-31T23:59:59Z', active: false },
+            { id: 7005, code: 'FREESHIP', discount_type: 'flat', discount_value: '0', expires_at: '2026-11-30T23:59:59Z', active: true },
+          ],
         },
       ],
     },
@@ -96,11 +196,119 @@ function normalizeColumnList(value) {
   return [...new Set(rawColumns.map(normalizeTableName).filter(Boolean))]
 }
 
+function normalizeKeyList(value) {
+  const rawKeys = Array.isArray(value) ? value : value ? [value] : []
+
+  return [...new Set(rawKeys.map(normalizeTableName).filter(Boolean))]
+}
+
+function normalizeForeignKeyList(value) {
+  const rawForeignKeys = Array.isArray(value) ? value : value ? [value] : []
+
+  return rawForeignKeys
+    .map((foreignKey) => {
+      if (typeof foreignKey === 'string') {
+        const [column, references] = foreignKey.split('->').map((part) => part.trim())
+        return column && references ? { column, references } : null
+      }
+
+      if (!foreignKey || typeof foreignKey !== 'object') {
+        return null
+      }
+
+      const column = (
+        foreignKey.column ??
+        foreignKey.columnName ??
+        foreignKey.name ??
+        foreignKey.key ??
+        ''
+      )
+        .toString()
+        .trim()
+
+      const references = (
+        foreignKey.references ??
+        foreignKey.reference ??
+        foreignKey.ref ??
+        foreignKey.target ??
+        ''
+      )
+        .toString()
+        .trim()
+
+      if (!column || !references) {
+        return null
+      }
+
+      return { column, references }
+    })
+    .filter(Boolean)
+}
+
+function getReferencedTableName(references) {
+  if (!references) {
+    return ''
+  }
+
+  return references.toString().split('.')[0].trim()
+}
+
+function formatSampleValue(tableName, columnName, rowIndex) {
+  const key = columnName.toLowerCase()
+
+  if (key === 'id' || key.endsWith('_id')) {
+    return rowIndex
+  }
+
+  if (key.includes('email')) {
+    return `${tableName}${rowIndex}@example.com`
+  }
+
+  if (key.includes('phone')) {
+    return `+1-555-010${rowIndex}`
+  }
+
+  if (key.includes('price') || key.includes('amount') || key.includes('total') || key.includes('value')) {
+    return (rowIndex * 19.95).toFixed(2)
+  }
+
+  if (key.includes('quantity') || key.includes('stock')) {
+    return rowIndex * 3
+  }
+
+  if (key.endsWith('_at') || key.includes('date')) {
+    const day = String(rowIndex).padStart(2, '0')
+    return `2026-08-${day}T10:00:00Z`
+  }
+
+  if (key.includes('status')) {
+    return ['active', 'pending', 'processing', 'shipped', 'paid'][rowIndex - 1] ?? 'active'
+  }
+
+  if (key.includes('code') || key.includes('sku') || key.includes('slug') || key.includes('number')) {
+    return `${tableName}-${columnName}-${rowIndex}`
+  }
+
+  return `${tableName}-${columnName}-${rowIndex}`
+}
+
+function buildSampleRows(tableName, columns) {
+  return Array.from({ length: 5 }, (_, index) => {
+    const rowNumber = index + 1
+    return columns.reduce((row, columnName) => {
+      row[columnName] = formatSampleValue(tableName, columnName, rowNumber)
+      return row
+    }, {})
+  })
+}
+
 function normalizeTableEntry(entry, fallbackIndex) {
   if (typeof entry === 'string' || typeof entry === 'number') {
     return {
       tableName: String(entry).trim(),
       columns: [],
+      primaryKey: [],
+      foreignKeys: [],
     }
   }
 
@@ -128,10 +336,24 @@ function normalizeTableEntry(entry, fallbackIndex) {
       entry.rows ??
       []
   )
+  const primaryKey = normalizeKeyList(
+    entry.primaryKey ?? entry.primaryKeys ?? entry.pk ?? entry.primary_key ?? entry.primary_keys
+  )
+  const foreignKeys = normalizeForeignKeyList(
+    entry.foreignKeys ?? entry.foreignKey ?? entry.fk ?? entry.foreign_keys ?? entry.foreign_key
+  )
+  const sampleRows = Array.isArray(entry.sampleRows)
+    ? entry.sampleRows
+    : Array.isArray(entry.rows)
+      ? entry.rows
+      : buildSampleRows(tableName || `table-${fallbackIndex + 1}`, columns)
 
   return {
     tableName: tableName || `table-${fallbackIndex + 1}`,
     columns,
+    primaryKey,
+    foreignKeys,
+    sampleRows,
   }
 }
 
@@ -177,6 +399,9 @@ function normalizeSchemaEntry(entry, fallbackIndex) {
       tableMap.set(table.tableName, {
         tableName: table.tableName || `table-${index + 1}`,
         columns: table.columns,
+        primaryKey: table.primaryKey,
+        foreignKeys: table.foreignKeys,
+        sampleRows: table.sampleRows,
       })
     })
 
@@ -242,6 +467,9 @@ function DashboardPage() {
   const [error, setError] = useState('')
   const [modeLabel, setModeLabel] = useState('mock')
   const [activeTableKey, setActiveTableKey] = useState('')
+  const [hoverTableKey, setHoverTableKey] = useState('')
+  const [hoverAnchorEl, setHoverAnchorEl] = useState(null)
+  const hoverCloseTimerRef = useRef(null)
 
   const isTableExpanded = useCallback(
     (schemaName, tableName) => activeTableKey === `${schemaName}.${tableName}`,
@@ -252,6 +480,59 @@ function DashboardPage() {
     const tableKey = `${schemaName}.${tableName}`
     setActiveTableKey((current) => (current === tableKey ? '' : tableKey))
   }, [])
+
+  const clearHoverCloseTimer = useCallback(() => {
+    if (hoverCloseTimerRef.current) {
+      window.clearTimeout(hoverCloseTimerRef.current)
+      hoverCloseTimerRef.current = null
+    }
+  }, [])
+
+  const openHoverTable = useCallback(
+    (event, schemaName, tableName) => {
+      clearHoverCloseTimer()
+      setHoverTableKey(`${schemaName}.${tableName}`)
+      setHoverAnchorEl(event.currentTarget)
+    },
+    [clearHoverCloseTimer]
+  )
+
+  const closeHoverTable = useCallback(() => {
+    clearHoverCloseTimer()
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      setHoverAnchorEl(null)
+      setHoverTableKey('')
+      hoverCloseTimerRef.current = null
+    }, 120)
+  }, [clearHoverCloseTimer])
+
+  const cancelHoverClose = useCallback(() => {
+    clearHoverCloseTimer()
+  }, [clearHoverCloseTimer])
+
+  const navigateToForeignTable = useCallback(
+    (schemaName, references) => {
+      const targetTable = getReferencedTableName(references)
+      if (!targetTable) {
+        return
+      }
+
+      setActiveTableKey(`${schemaName}.${targetTable}`)
+    },
+    []
+  )
+
+  const hoverTable = useMemo(() => {
+    if (!hoverTableKey) {
+      return null
+    }
+
+    const [schemaName, tableName] = hoverTableKey.split('.')
+    const schema = schemas.find((item) => item.schemaName === schemaName)
+    const table = schema?.tables?.find((item) => item.tableName === tableName)
+
+    return schema && table ? { schemaName, tableName, table } : null
+  }, [hoverTableKey, schemas])
 
   const loadTables = useCallback(async () => {
     setIsLoading(true)
@@ -306,6 +587,8 @@ function DashboardPage() {
     }
   }, [loadTables, user])
 
+  useEffect(() => () => clearHoverCloseTimer(), [clearHoverCloseTimer])
+
   const totalTables = useMemo(
     () => schemas.reduce((count, schema) => count + schema.tables.length, 0),
     [schemas]
@@ -327,7 +610,17 @@ function DashboardPage() {
       return null
     }
 
-    return { schemaName, tableName, columns: table.columns }
+    const primaryKey = table.primaryKey ?? []
+    const foreignKeys = table.foreignKeys ?? []
+
+    return {
+      schemaName,
+      tableName,
+      columns: table.columns,
+      primaryKey,
+      foreignKeys,
+      sampleRows: table.sampleRows ?? [],
+    }
   }, [activeTableKey, schemas])
 
   return (
@@ -424,47 +717,93 @@ function DashboardPage() {
                     <>
                       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                         {schema.tables.map((table) => (
-                          <Tooltip
+                          <Chip
                             key={`${schema.schemaName}-${table.tableName}`}
-                            arrow
-                            placement="top-start"
-                            title={
-                              table.columns.length > 0 ? (
-                                <Stack spacing={0.5} sx={{ maxWidth: 320 }}>
-                                  <Typography variant="caption" fontWeight={700}>
-                                    Columns
-                                  </Typography>
-                                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                                    {table.columns.map((columnName) => (
-                                      <Chip
-                                        key={`${schema.schemaName}-${table.tableName}-${columnName}`}
-                                        label={columnName}
-                                        size="small"
-                                        variant="filled"
-                                        color="primary"
-                                      />
-                                    ))}
-                                  </Stack>
-                                </Stack>
-                              ) : (
-                                <Typography variant="caption">No columns available.</Typography>
-                              )
+                            label={table.tableName}
+                            color="primary"
+                            variant={
+                              isTableExpanded(schema.schemaName, table.tableName)
+                                ? 'filled'
+                                : 'outlined'
                             }
-                          >
-                            <Chip
-                              label={table.tableName}
-                              color="primary"
-                              variant={
-                                isTableExpanded(schema.schemaName, table.tableName)
-                                  ? 'filled'
-                                  : 'outlined'
-                              }
-                              onClick={() => toggleTable(schema.schemaName, table.tableName)}
-                              clickable
-                            />
-                          </Tooltip>
+                            onClick={() => toggleTable(schema.schemaName, table.tableName)}
+                            clickable
+                            onMouseEnter={(event) =>
+                              openHoverTable(event, schema.schemaName, table.tableName)
+                            }
+                            onMouseLeave={closeHoverTable}
+                          />
                         ))}
                       </Stack>
+
+                      <Popper
+                        open={Boolean(hoverAnchorEl) && Boolean(hoverTable)}
+                        anchorEl={hoverAnchorEl}
+                        placement="top-start"
+                        disablePortal
+                        modifiers={[
+                          { name: 'offset', options: { offset: [0, 8] } },
+                          { name: 'preventOverflow', options: { padding: 8 } },
+                        ]}
+                        style={{ zIndex: 1300 }}
+                        onMouseEnter={cancelHoverClose}
+                        onMouseLeave={closeHoverTable}
+                      >
+                        <Paper
+                          elevation={6}
+                          sx={{ p: 1.5, maxWidth: 360 }}
+                          onMouseEnter={cancelHoverClose}
+                          onMouseLeave={closeHoverTable}
+                        >
+                          {hoverTable ? (
+                            <Stack spacing={0.75}>
+                              <Typography variant="caption" fontWeight={700}>
+                                {hoverTable.table.tableName} columns
+                              </Typography>
+                              <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                                {hoverTable.table.columns.length > 0 ? (
+                                  hoverTable.table.columns.map((columnName) => {
+                                    const isPk = hoverTable.table.primaryKey?.includes(columnName)
+                                    const fkTarget = hoverTable.table.foreignKeys?.find(
+                                      (key) => key.column === columnName
+                                    )
+
+                                    return (
+                                      <Chip
+                                        key={`${hoverTable.schemaName}-${hoverTable.tableName}-${columnName}`}
+                                        label={
+                                          isPk
+                                            ? `${columnName} (PK)`
+                                            : fkTarget
+                                              ? `${columnName} → ${getReferencedTableName(
+                                                  fkTarget.references
+                                                )}`
+                                              : columnName
+                                        }
+                                        size="small"
+                                        variant="filled"
+                                        color={isPk ? 'warning' : fkTarget ? 'info' : 'primary'}
+                                        clickable={Boolean(fkTarget)}
+                                        onClick={
+                                          fkTarget
+                                            ? () =>
+                                                navigateToForeignTable(
+                                                  hoverTable.schemaName,
+                                                  fkTarget.references
+                                                )
+                                            : undefined
+                                        }
+                                      />
+                                    )
+                                  })
+                                ) : (
+                                  <Typography variant="caption">No columns available.</Typography>
+                                )}
+                              </Stack>
+                            </Stack>
+                          ) : null}
+                        </Paper>
+                      </Popper>
 
                       <Collapse
                         in={Boolean(activeTable) && activeTable.schemaName === schema.schemaName}
@@ -475,29 +814,115 @@ function DashboardPage() {
                           <Box sx={{ pt: 1 }}>
                             <Paper variant="outlined" sx={{ p: 2 }}>
                               <Stack spacing={1}>
-                                <Typography variant="subtitle2" fontWeight={700}>
-                                  {activeTable.tableName}
-                                </Typography>
+                                <Stack
+                                  direction={{ xs: 'column', sm: 'row' }}
+                                  spacing={1}
+                                  alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                  justifyContent="space-between"
+                                >
+                                  <Typography variant="subtitle2" fontWeight={700}>
+                                    {activeTable.tableName}
+                                  </Typography>
+                                  <Chip
+                                    label={`${(activeTable.columns ?? []).length} columns`}
+                                    color="primary"
+                                    variant="outlined"
+                                    size="small"
+                                  />
+                                </Stack>
                                 <Typography variant="caption" color="text.secondary" fontWeight={700}>
                                   Columns
                                 </Typography>
-                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                  {activeTable.columns.length > 0 ? (
-                                    activeTable.columns.map((columnName) => (
-                                      <Chip
-                                        key={`${activeTable.schemaName}-${activeTable.tableName}-${columnName}`}
-                                        label={columnName}
-                                        color="primary"
-                                        variant="outlined"
-                                        size="small"
-                                      />
-                                    ))
+                                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                                  {(activeTable.columns ?? []).length > 0 ? (
+                                    activeTable.columns.map((columnName) => {
+                                      const isPk = (activeTable.primaryKey ?? []).includes(columnName)
+                                      const fkTarget = (activeTable.foreignKeys ?? []).find(
+                                        (key) => key.column === columnName
+                                      )
+
+                                      return (
+                                        <Chip
+                                          key={`${activeTable.schemaName}-${activeTable.tableName}-${columnName}`}
+                                          label={
+                                            isPk
+                                              ? `${columnName} (PK)`
+                                              : fkTarget
+                                                ? `${columnName} → ${getReferencedTableName(
+                                                    fkTarget.references
+                                                  )}`
+                                                : columnName
+                                          }
+                                          color={
+                                            isPk ? 'warning' : fkTarget ? 'info' : 'primary'
+                                          }
+                                          variant="filled"
+                                          size="small"
+                                          clickable={Boolean(fkTarget)}
+                                          onClick={
+                                            fkTarget
+                                              ? () =>
+                                                  navigateToForeignTable(
+                                                    activeTable.schemaName,
+                                                    fkTarget.references
+                                                  )
+                                              : undefined
+                                          }
+                                        />
+                                      )
+                                    })
                                   ) : (
                                     <Typography variant="body2" color="text.secondary">
                                       No columns available.
                                     </Typography>
                                   )}
                                 </Stack>
+
+                                <Box sx={{ pt: 1.5 }}>
+                                  <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                                    Sample data
+                                  </Typography>
+                                  <TableContainer
+                                    component={Paper}
+                                    variant="outlined"
+                                    sx={{ mt: 0.75, maxHeight: 320 }}
+                                  >
+                                    <Table size="small" stickyHeader>
+                                      <TableHead>
+                                        <TableRow>
+                                          {activeTable.columns.map((columnName) => (
+                                            <TableCell key={`${activeTable.tableName}-head-${columnName}`}>
+                                              {columnName}
+                                            </TableCell>
+                                          ))}
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {(activeTable.sampleRows ?? []).length > 0 ? (
+                                          activeTable.sampleRows.slice(0, 5).map((row, rowIndex) => (
+                                            <TableRow key={`${activeTable.tableName}-row-${rowIndex}`}>
+                                              {activeTable.columns.map((columnName) => (
+                                                <TableCell
+                                                  key={`${activeTable.tableName}-row-${rowIndex}-${columnName}`}
+                                                >
+                                                  {row[columnName] ?? '-'}
+                                                </TableCell>
+                                              ))}
+                                            </TableRow>
+                                          ))
+                                        ) : (
+                                          <TableRow>
+                                            <TableCell colSpan={activeTable.columns.length}>
+                                              <Typography variant="body2" color="text.secondary">
+                                                No sample rows available.
+                                              </Typography>
+                                            </TableCell>
+                                          </TableRow>
+                                        )}
+                                      </TableBody>
+                                    </Table>
+                                  </TableContainer>
+                                </Box>
                               </Stack>
                             </Paper>
                           </Box>
