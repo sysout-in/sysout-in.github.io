@@ -400,6 +400,28 @@ function getInboundUsageSummary(schemas, schemaName, tableName) {
   return summary
 }
 
+function removeForeignKeyUsageFromSchemas(schemas, sourceSchemaName, sourceTableName, sourceColumnName) {
+  return schemas.map((schema) => {
+    if (schema.schemaName !== sourceSchemaName) {
+      return schema
+    }
+
+    return {
+      ...schema,
+      tables: schema.tables.map((table) => {
+        if (table.tableName !== sourceTableName) {
+          return table
+        }
+
+        return {
+          ...table,
+          foreignKeys: (table.foreignKeys ?? []).filter((foreignKey) => foreignKey.column !== sourceColumnName),
+        }
+      }),
+    }
+  })
+}
+
 function getColumnRole(table, columnName) {
   if (table.primaryKey?.includes(columnName)) {
     return 'pk'
@@ -760,6 +782,34 @@ function DashboardPage() {
     },
     [clearInboundUsageCloseTimer, schemas]
   )
+
+  const removeInboundUsageSource = useCallback((sourceSchemaName, sourceTableName, sourceColumnName) => {
+    setSchemas((currentSchemas) => {
+      const nextSchemas = removeForeignKeyUsageFromSchemas(
+        currentSchemas,
+        sourceSchemaName,
+        sourceTableName,
+        sourceColumnName
+      )
+
+      setInboundUsagePreview((currentPreview) => {
+        if (!currentPreview) {
+          return currentPreview
+        }
+
+        return {
+          ...getInboundUsageSummary(
+            nextSchemas,
+            currentPreview.schemaName,
+            currentPreview.tableName
+          ),
+          anchorEl: currentPreview.anchorEl,
+        }
+      })
+
+      return nextSchemas
+    })
+  }, [])
 
   const closeInboundUsagePreview = useCallback(() => {
     clearInboundUsageCloseTimer()
@@ -1600,6 +1650,13 @@ function DashboardPage() {
                                         clickable
                                         onClick={() =>
                                           navigateToTable(source.schemaName, source.tableName)
+                                        }
+                                        onDelete={() =>
+                                          removeInboundUsageSource(
+                                            source.schemaName,
+                                            source.tableName,
+                                            source.columnName
+                                          )
                                         }
                                       />
                                     ))}
