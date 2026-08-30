@@ -512,6 +512,7 @@ function DashboardPage() {
   const [error, setError] = useState('')
   const [modeLabel, setModeLabel] = useState('mock')
   const [activeTableKey, setActiveTableKey] = useState('')
+  const [selectedSampleRowIndex, setSelectedSampleRowIndex] = useState(null)
   const [hoverTableKey, setHoverTableKey] = useState('')
   const [hoverAnchorEl, setHoverAnchorEl] = useState(null)
   const hoverCloseTimerRef = useRef(null)
@@ -527,6 +528,10 @@ function DashboardPage() {
     const tableKey = `${schemaName}.${tableName}`
     setActiveTableKey((current) => (current === tableKey ? '' : tableKey))
   }, [])
+
+  useEffect(() => {
+    setSelectedSampleRowIndex(null)
+  }, [activeTableKey])
 
   const clearHoverCloseTimer = useCallback(() => {
     if (hoverCloseTimerRef.current) {
@@ -1131,14 +1136,20 @@ function DashboardPage() {
                                       </TableHead>
                                       <TableBody>
                                         {(activeTable.sampleRows ?? []).length > 0 ? (
-                                          activeTable.sampleRows.slice(0, 5).map((row, rowIndex) => (
-                                            <TableRow
-                                              key={`${activeTable.tableName}-row-${rowIndex}`}
-                                              hover
-                                              sx={{
+                                          activeTable.sampleRows.slice(0, 5).map((row, rowIndex) => {
+                                            const isSelectedRow = selectedSampleRowIndex === rowIndex
+
+                                            return (
+                                              <TableRow
+                                                key={`${activeTable.tableName}-row-${rowIndex}`}
+                                                hover
+                                                selected={isSelectedRow}
+                                                onClick={() => setSelectedSampleRowIndex(rowIndex)}
+                                                sx={{
+                                                  cursor: 'pointer',
                                                   '&:hover .MuiTableCell-root': {
                                                     filter: 'brightness(0.98)',
-                                                },
+                                                  },
                                                 }}
                                               >
                                                 {activeTable.columns.map((columnName) => {
@@ -1152,9 +1163,19 @@ function DashboardPage() {
                                                     <TableCell
                                                       key={`${activeTable.tableName}-row-${rowIndex}-${columnName}`}
                                                       sx={{
-                                                        bgcolor: palette.bg,
+                                                        bgcolor: isSelectedRow
+                                                          ? alpha(
+                                                              theme.palette.primary.main,
+                                                              theme.palette.mode === 'dark'
+                                                                ? 0.18
+                                                                : 0.1
+                                                            )
+                                                          : palette.bg,
                                                         color: palette.dataText,
-                                                        borderColor: palette.border,
+                                                        borderColor: isSelectedRow
+                                                          ? theme.palette.primary.main
+                                                          : palette.border,
+                                                        fontWeight: isSelectedRow ? 700 : 400,
                                                         cursor: fkTarget ? 'pointer' : 'default',
                                                       }}
                                                       onMouseEnter={
@@ -1177,7 +1198,8 @@ function DashboardPage() {
                                                   )
                                                 })}
                                               </TableRow>
-                                            ))
+                                            )
+                                          })
                                         ) : (
                                             <TableRow>
                                             <TableCell
