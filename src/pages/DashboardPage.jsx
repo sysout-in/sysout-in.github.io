@@ -18,6 +18,7 @@ import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import Typography from '@mui/material/Typography'
+import { alpha, useTheme } from '@mui/material/styles'
 import httpClient from '../api/httpClient'
 import PageContainer from '../components/common/PageContainer'
 import SectionCard from '../components/common/SectionCard'
@@ -253,6 +254,18 @@ function getReferencedTableName(references) {
   return references.toString().split('.')[0].trim()
 }
 
+function getColumnRole(table, columnName) {
+  if (table.primaryKey?.includes(columnName)) {
+    return 'pk'
+  }
+
+  if (table.foreignKeys?.some((key) => key.column === columnName)) {
+    return 'fk'
+  }
+
+  return 'general'
+}
+
 function formatSampleValue(tableName, columnName, rowIndex) {
   const key = columnName.toLowerCase()
 
@@ -461,6 +474,7 @@ function normalizeTableInventory(data) {
 }
 
 function DashboardPage() {
+  const theme = useTheme()
   const { user, getAccessTokenSilently } = useAuth0()
   const [schemas, setSchemas] = useState([])
   const [isLoading, setIsLoading] = useState(true)
@@ -533,6 +547,39 @@ function DashboardPage() {
 
     return schema && table ? { schemaName, tableName, table } : null
   }, [hoverTableKey, schemas])
+
+  const getColumnPalette = useCallback(
+    (role) => {
+      if (role === 'pk') {
+        return {
+          bg: alpha(theme.palette.warning.main, 0.015),
+          border: theme.palette.warning.main,
+          headerBg: theme.palette.warning.main,
+          headerText: theme.palette.common.white,
+          dataText: theme.palette.text.primary,
+        }
+      }
+
+      if (role === 'fk') {
+        return {
+          bg: alpha(theme.palette.info.main, 0.015),
+          border: theme.palette.info.main,
+          headerBg: theme.palette.info.main,
+          headerText: theme.palette.common.white,
+          dataText: theme.palette.text.primary,
+        }
+      }
+
+      return {
+        bg: alpha(theme.palette.primary.main, 0.009),
+        border: theme.palette.primary.main,
+        headerBg: theme.palette.primary.main,
+        headerText: theme.palette.common.white,
+        dataText: theme.palette.text.primary,
+      }
+    },
+    [theme]
+  )
 
   const loadTables = useCallback(async () => {
     setIsLoading(true)
@@ -885,37 +932,83 @@ function DashboardPage() {
                                   <TableContainer
                                     component={Paper}
                                     variant="outlined"
-                                    sx={{ mt: 0.75, maxHeight: 320 }}
+                                    sx={{
+                                      mt: 0.75,
+                                      maxHeight: 320,
+                                      borderColor: alpha(theme.palette.primary.main, 0.12),
+                                      bgcolor: alpha(theme.palette.primary.main, 0.02),
+                                    }}
                                   >
                                     <Table size="small" stickyHeader>
                                       <TableHead>
-                                        <TableRow>
-                                          {activeTable.columns.map((columnName) => (
-                                            <TableCell key={`${activeTable.tableName}-head-${columnName}`}>
-                                              {columnName}
-                                            </TableCell>
-                                          ))}
+                                        <TableRow
+                                          sx={{
+                                            '& .MuiTableCell-root': {
+                                              fontWeight: 700,
+                                            },
+                                          }}
+                                        >
+                                          {activeTable.columns.map((columnName) => {
+                                            const role = getColumnRole(activeTable, columnName)
+                                            const palette = getColumnPalette(role)
+
+                                            return (
+                                              <TableCell
+                                                key={`${activeTable.tableName}-head-${columnName}`}
+                                                sx={{
+                                                  bgcolor: palette.headerBg,
+                                                  color: palette.headerText,
+                                                  borderColor: palette.border,
+                                                }}
+                                              >
+                                                {columnName}
+                                              </TableCell>
+                                            )
+                                          })}
                                         </TableRow>
                                       </TableHead>
                                       <TableBody>
                                         {(activeTable.sampleRows ?? []).length > 0 ? (
                                           activeTable.sampleRows.slice(0, 5).map((row, rowIndex) => (
-                                            <TableRow key={`${activeTable.tableName}-row-${rowIndex}`}>
-                                              {activeTable.columns.map((columnName) => (
-                                                <TableCell
-                                                  key={`${activeTable.tableName}-row-${rowIndex}-${columnName}`}
-                                                >
-                                                  {row[columnName] ?? '-'}
-                                                </TableCell>
-                                              ))}
-                                            </TableRow>
-                                          ))
+                                            <TableRow
+                                              key={`${activeTable.tableName}-row-${rowIndex}`}
+                                              hover
+                                              sx={{
+                                                  '&:hover .MuiTableCell-root': {
+                                                    filter: 'brightness(0.98)',
+                                                },
+                                                }}
+                                              >
+                                                {activeTable.columns.map((columnName) => {
+                                                  const role = getColumnRole(activeTable, columnName)
+                                                  const palette = getColumnPalette(role)
+
+                                                  return (
+                                                    <TableCell
+                                                      key={`${activeTable.tableName}-row-${rowIndex}-${columnName}`}
+                                                      sx={{
+                                                        bgcolor: palette.bg,
+                                                        color: palette.dataText,
+                                                        borderColor: palette.border,
+                                                      }}
+                                                    >
+                                                      {row[columnName] ?? '-'}
+                                                    </TableCell>
+                                                  )
+                                                })}
+                                              </TableRow>
+                                            ))
                                         ) : (
-                                          <TableRow>
-                                            <TableCell colSpan={activeTable.columns.length}>
-                                              <Typography variant="body2" color="text.secondary">
-                                                No sample rows available.
-                                              </Typography>
+                                            <TableRow>
+                                            <TableCell
+                                                colSpan={activeTable.columns.length}
+                                                sx={{
+                                                  bgcolor: alpha(theme.palette.primary.main, 0.06),
+                                                }}
+                                              >
+                                                <Typography variant="body2" color="text.secondary">
+                                                  No sample rows available.
+                                                </Typography>
                                             </TableCell>
                                           </TableRow>
                                         )}
