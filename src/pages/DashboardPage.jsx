@@ -991,6 +991,24 @@ function DashboardPage() {
                             p: 1.5,
                             width: 'min(100vw - 32px, 960px)',
                             maxWidth: 'none',
+                            borderRadius: 2,
+                            border: '1px solid rgba(0, 0, 0, 0.9)',
+                            backgroundImage:
+                              theme.palette.mode === 'dark'
+                                ? `linear-gradient(180deg, ${alpha(
+                                    theme.palette.common.white,
+                                    0.02
+                                  )} 0%, ${theme.palette.background.paper} 100%)`
+                                : 'none',
+                            boxShadow:
+                              theme.palette.mode === 'dark'
+                                ? `
+                                  inset 0 1px 0 ${alpha(theme.palette.common.white, 0.7)},
+                                  inset 0 -1px 0 ${alpha(theme.palette.common.black, 0.08)},
+                                  0 1px 0 ${alpha(theme.palette.common.black, 0.16)},
+                                  0 16px 30px ${alpha(theme.palette.common.black, 0.18)}
+                                `
+                                : `0 8px 18px ${alpha(theme.palette.common.black, 0.1)}`,
                           }}
                           onMouseEnter={cancelFkHoverClose}
                           onMouseLeave={closeFkHoverPreview}
@@ -1001,7 +1019,13 @@ function DashboardPage() {
                                 {fkHoverPreview.tableName} master row
                               </Typography>
                               {fkHoverPreview.row ? (
-                                <TableContainer component={Box} sx={{ width: '100%', overflowX: 'hidden' }}>
+                                <TableContainer
+                                  component={Box}
+                                  sx={{
+                                    width: '100%',
+                                    overflowX: 'hidden',
+                                  }}
+                                >
                                   <Table size="small" sx={{ width: '100%' }}>
                                     <TableHead>
                                       <TableRow>
