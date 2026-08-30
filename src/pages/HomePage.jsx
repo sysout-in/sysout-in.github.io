@@ -53,7 +53,7 @@ function HomePage() {
             <SectionCard title="Routing + Navigation">
               <Stack spacing={1}>
                 <Typography variant="body2" color="text.secondary">
-                  React Router is wired with Home, About, and Not Found routes.
+                  React Router is wired with Home, About, Tables, and Not Found routes.
                 </Typography>
                 <Chip icon={<RouterOutlinedIcon />} label="react-router-dom" />
               </Stack>

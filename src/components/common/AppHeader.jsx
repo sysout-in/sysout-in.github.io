@@ -19,7 +19,7 @@ import BrandLogo from './BrandLogo'
 const navItems = [
   { label: 'Home', path: '/' },
   { label: 'About', path: '/about' },
-  { label: 'Dashboard', path: '/dashboard' },
+  { label: 'Tables', path: '/tables' },
 ]
 
 const brandText = (import.meta.env.VITE_BRAND_TEXT ?? '').trim()
@@ -29,6 +29,7 @@ function AppHeader({ mode, onToggleMode }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
+  const isTablesPage = location.pathname === '/tables' || location.pathname === '/dashboard'
 
   const goTo = (path) => {
     navigate(path)
@@ -49,16 +50,21 @@ function AppHeader({ mode, onToggleMode }) {
         {/* Desktop nav */}
         <Box sx={{ display: { xs: 'none', md: 'block' } }}>
           <Stack direction="row" spacing={1} alignItems="center">
-            {navItems.map((item) => (
-              <Button
-                key={item.path}
-                color={location.pathname === item.path ? 'primary' : 'inherit'}
-                variant={location.pathname === item.path ? 'contained' : 'text'}
-                onClick={() => goTo(item.path)}
-              >
-                {item.label}
-              </Button>
-            ))}
+            {navItems.map((item) => {
+              const isActive =
+                item.path === '/tables' ? isTablesPage : location.pathname === item.path
+
+              return (
+                <Button
+                  key={item.path}
+                  color={isActive ? 'primary' : 'inherit'}
+                  variant={isActive ? 'contained' : 'text'}
+                  onClick={() => goTo(item.path)}
+                >
+                  {item.label}
+                </Button>
+              )
+            })}
             <ThemeModeToggle mode={mode} onToggle={onToggleMode} />
             <AuthButton />
           </Stack>
@@ -77,15 +83,20 @@ function AppHeader({ mode, onToggleMode }) {
       <Drawer anchor="right" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
         <Box sx={{ width: 250, pt: 2 }} role="presentation">
           <List>
-            {navItems.map((item) => (
-              <ListItemButton
-                key={item.path}
-                selected={location.pathname === item.path}
-                onClick={() => goTo(item.path)}
-              >
-                <ListItemText primary={item.label} />
-              </ListItemButton>
-            ))}
+            {navItems.map((item) => {
+              const isActive =
+                item.path === '/tables' ? isTablesPage : location.pathname === item.path
+
+              return (
+                <ListItemButton
+                  key={item.path}
+                  selected={isActive}
+                  onClick={() => goTo(item.path)}
+                >
+                  <ListItemText primary={item.label} />
+                </ListItemButton>
+              )
+            })}
           </List>
           <Divider />
         </Box>

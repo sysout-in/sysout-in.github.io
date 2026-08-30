@@ -10,6 +10,7 @@ const auth0Domain = (import.meta.env.VITE_AUTH0_DOMAIN ?? '')
   .replace(/^https?:\/\//, '')
   .replace(/\/$/, '')
 const auth0ClientId = (import.meta.env.VITE_AUTH0_CLIENT_ID ?? '').trim()
+const auth0Audience = (import.meta.env.VITE_AUTH0_AUDIENCE ?? '').trim()
 const brandText = (import.meta.env.VITE_BRAND_TEXT ?? '').trim()
 const brandFavicon = (import.meta.env.VITE_BRAND_FAVICON ?? '').trim()
 
@@ -36,6 +37,7 @@ createRoot(document.getElementById('root')).render(
       authorizationParams={{
         redirect_uri: window.location.origin,
         connection: 'google-oauth2',
+        ...(auth0Audience ? { audience: auth0Audience } : {}),
       }}
     >
       <HashRouter>
